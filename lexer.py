@@ -143,6 +143,22 @@ def byte_text(b):
 if __name__ == "__main__":
     import sys
 
-    with open(sys.argv[1], "rb") as f:
-        for tokens in lex(f.read()):
-            print(" ".join(repr(t) for t in tokens))
+    if len(sys.argv) != 2:
+        print(f"usage: {sys.argv[0]} <input>", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        with open(sys.argv[1], "rb") as f:
+            data = f.read()
+    except OSError as exc:
+        print(f"cannot read {sys.argv[1]}: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        lines = lex(data)
+    except CompileError as exc:
+        print(f"compilation error: line {exc.line}:{exc.col}: {exc.message}", file=sys.stderr)
+        sys.exit(1)
+
+    for tokens in lines:
+        print(" ".join(repr(t) for t in tokens))
