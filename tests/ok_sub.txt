@@ -1,7 +1,0 @@
-int a
-int b
-int c
-a := 20
-b := 6
-c := a - b
-exit c

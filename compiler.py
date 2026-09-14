@@ -1,72 +1,119 @@
-import re
 import sys
 
 from llvmlite import ir
 import llvmlite.binding as llvm
 
+from lexer import CompileError, lex
+
 I32, I8 = ir.IntType(32), ir.IntType(8)
-RESERVED = {"int", "exit"}
-NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-DECL = re.compile(r"int\s+(\S+)\Z")
-EXIT = re.compile(r"exit\s+(\S+)\Z")
-ASSIGN = re.compile(r"(\S+)\s*:=\s*(.+)\Z")
-BINOP = re.compile(r"(\S+)\s*([-+*])\s*(\S+)\Z")
 FORMAT = b"Program exit with result %d\n\0"
+BINOPS = {"plus": "+", "minus": "-", "star": "*"}
 
 
-class CompileError(Exception):
-    def __init__(self, line_no, message):
-        super().__init__(message)
-        self.line_no = line_no
-        self.message = message
+class Var:
+    def __init__(self, slot, is_mut, line, col):
+        self.slot = slot
+        self.is_mut = is_mut
+        self.line = line
+        self.col = col
 
 
-def check_name(token, line_no):
-    if token in RESERVED:
-        raise CompileError(line_no, f"'{token}' is reserved")
-    if not NAME.match(token):
-        raise CompileError(line_no, f"invalid name '{token}'")
-    return token
+def expect(tokens, i, kind, what):
+    if i >= len(tokens):
+        end = tokens[-1]
+        raise CompileError(end.line, end.col, f"expected {what}")
+    if tokens[i].kind != kind:
+        raise CompileError(tokens[i].line, tokens[i].col, f"expected {what}")
+    return tokens[i]
 
 
-def parse_operand(token, line_no):
-    if re.fullmatch(r"-?\d+", token):
-        return "const", int(token)
-    return "var", check_name(token, line_no)
+def parse_operand(tokens, i):
+    token = tokens[i]
+    if token.kind == "minus":
+        raise CompileError(token.line, token.col, "negative numbers are not supported")
+    if token.kind == "number":
+        return ("const", int(token.text), token), i + 1
+    if token.kind == "ident":
+        return ("var", token.text, token), i + 1
+    raise CompileError(token.line, token.col, "expected a constant or a variable")
 
 
-def parse_line(text, line_no):
-    if m := DECL.match(text):
-        return "decl", check_name(m.group(1), line_no)
-    if m := EXIT.match(text):
-        return "exit", check_name(m.group(1), line_no)
-    if m := ASSIGN.match(text):
-        target = check_name(m.group(1), line_no)
-        expr = m.group(2).strip()
-        if b := BINOP.match(expr):
-            lhs = parse_operand(b.group(1), line_no)
-            rhs = parse_operand(b.group(3), line_no)
-            return "assign", target, lhs, b.group(2), rhs
-        return "assign", target, parse_operand(expr, line_no), None, None
-    raise CompileError(line_no, f"cannot parse '{text}'")
+def parse_expr(tokens, i, end):
+    left, i = parse_operand(tokens, i)
+    if i == end:
+        return ("value", left), i
+    if tokens[i].kind not in BINOPS:
+        raise CompileError(tokens[i].line, tokens[i].col, "expected an operator")
+    op = BINOPS[tokens[i].kind]
+    right, i = parse_operand(tokens, i + 1)
+    if i != end:
+        raise CompileError(tokens[i].line, tokens[i].col, "extra tokens after the expression")
+    return ("binop", left, op, right), i
 
 
-def parse(source):
+def parse_decl(tokens):
+    i = 1
+    is_mut = tokens[i].kind == "kw_mut"
+    if is_mut:
+        i += 1
+    name = expect(tokens, i, "ident", "a variable name")
+    i += 1
+    if i >= len(tokens) or tokens[i].kind != "lbrace":
+        raise CompileError(name.line, name.col, f"variable '{name.text}' needs an initialiser in {{}}")
+    open_brace = tokens[i]
+    close = next(j for j in range(i + 1, len(tokens)) if tokens[j].kind == "rbrace")
+    if close == i + 1:
+        raise CompileError(open_brace.line, open_brace.col, "the initialiser is empty")
+    expr, _ = parse_expr(tokens, i + 1, close)
+    if close + 1 != len(tokens):
+        extra = tokens[close + 1]
+        raise CompileError(extra.line, extra.col, "extra tokens after the declaration")
+    return ("decl", name, is_mut, expr)
+
+
+def parse_assign(tokens):
+    name = tokens[0]
+    expr, _ = parse_expr(tokens, 2, len(tokens))
+    return ("assign", name, expr)
+
+
+def parse_exit(tokens):
+    operand, i = parse_operand(tokens, 1)
+    if i != len(tokens):
+        raise CompileError(tokens[i].line, tokens[i].col, "extra tokens after 'exit'")
+    return ("exit", tokens[0], operand)
+
+
+def parse(lines):
     statements = []
-    for line_no, raw in enumerate(source.splitlines(), start=1):
-        if line := raw.strip():
-            statements.append((line_no, parse_line(line, line_no)))
+    for tokens in lines:
+        tokens = [t for t in tokens if t.kind != "endline"]
+        if not tokens:
+            continue
+        head = tokens[0]
+        if head.kind == "kw_i32":
+            statements.append(parse_decl(tokens))
+        elif head.kind == "kw_exit":
+            statements.append(parse_exit(tokens))
+        elif head.kind == "ident" and len(tokens) > 1 and tokens[1].kind == "assign":
+            statements.append(parse_assign(tokens))
+        else:
+            raise CompileError(head.line, head.col, f"'{head.text}' does not start a statement")
 
-    for line_no, statement in statements[:-1]:
+    if not statements:
+        raise CompileError(1, 1, "the program is empty: it must end with 'exit'")
+    for statement in statements[:-1]:
         if statement[0] == "exit":
-            raise CompileError(line_no, "'exit' must be the last statement")
-    if not statements or statements[-1][1][0] != "exit":
-        raise CompileError(len(source.splitlines()), "program must end with an 'exit' statement")
+            token = statement[1]
+            raise CompileError(token.line, token.col, "'exit' must be the last statement")
+    if statements[-1][0] != "exit":
+        last = statements[-1][1]
+        raise CompileError(last.line, last.col, "the program must end with 'exit'")
     return statements
 
 
 def build(statements):
-    module = ir.Module(name="practice1")
+    module = ir.Module(name="practice2")
     module.triple = llvm.get_default_triple()
 
     main = ir.Function(module, ir.FunctionType(I32, []), name="main")
@@ -81,36 +128,50 @@ def build(statements):
     fmt.initializer = ir.Constant(fmt_type, bytearray(FORMAT))
 
     symbols = {}
-
-    def lookup(name, line_no):
-        if name not in symbols:
-            raise CompileError(line_no, f"undeclared variable '{name}'")
-        return symbols[name]
-
-    def value(operand, line_no):
-        kind, payload = operand
-        if kind == "const":
-            return ir.Constant(I32, payload)
-        return builder.load(lookup(payload, line_no))
-
     emit = {"+": builder.add, "-": builder.sub, "*": builder.mul}
 
-    for line_no, statement in statements:
+    def load(operand):
+        kind, payload, token = operand
+        if kind == "const":
+            return ir.Constant(I32, payload)
+        if payload not in symbols:
+            raise CompileError(
+                token.line, token.col, f"variable '{payload}' is used before its declaration"
+            )
+        return builder.load(symbols[payload].slot)
+
+    def evaluate(expr):
+        if expr[0] == "value":
+            return load(expr[1])
+        _, left, op, right = expr
+        return emit[op](load(left), load(right))
+
+    for statement in statements:
         if statement[0] == "decl":
-            name = statement[1]
-            if name in symbols:
-                raise CompileError(line_no, f"variable '{name}' already declared")
-            symbols[name] = builder.alloca(I32, name=name)
+            _, name, is_mut, expr = statement
+            value = evaluate(expr)
+            if name.text in symbols:
+                raise CompileError(
+                    name.line, name.col, f"variable '{name.text}' is already declared"
+                )
+            slot = builder.alloca(I32, name=name.text)
+            builder.store(value, slot)
+            symbols[name.text] = Var(slot, is_mut, name.line, name.col)
         elif statement[0] == "assign":
-            _, target, lhs, op, rhs = statement
-            slot = lookup(target, line_no)
-            result = value(lhs, line_no)
-            if op:
-                result = emit[op](result, value(rhs, line_no))
-            builder.store(result, slot)
+            _, name, expr = statement
+            if name.text not in symbols:
+                raise CompileError(
+                    name.line, name.col, f"variable '{name.text}' is used before its declaration"
+                )
+            target = symbols[name.text]
+            if not target.is_mut:
+                raise CompileError(
+                    name.line, name.col, f"cannot assign to '{name.text}': it is not mut"
+                )
+            builder.store(evaluate(expr), target.slot)
         else:
-            operand = builder.load(lookup(statement[1], line_no))
-            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), operand])
+            value = load(statement[2])
+            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), value])
             builder.ret(ir.Constant(I32, 0))
 
     return module
@@ -122,16 +183,16 @@ def main(argv):
         return 2
 
     try:
-        with open(argv[1]) as f:
+        with open(argv[1], "rb") as f:
             source = f.read()
     except OSError as exc:
         print(f"cannot read {argv[1]}: {exc}", file=sys.stderr)
         return 2
 
     try:
-        module = build(parse(source))
+        module = build(parse(lex(source)))
     except CompileError as exc:
-        print(f"compilation error: line {exc.line_no}: {exc.message}", file=sys.stderr)
+        print(f"compilation error: line {exc.line}:{exc.col}: {exc.message}", file=sys.stderr)
         return 1
 
     with open(argv[2], "w") as f:

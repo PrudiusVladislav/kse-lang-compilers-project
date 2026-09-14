@@ -1,5 +1,0 @@
-int n
-int m
-n := 7
-m := 2 * n
-exit m
