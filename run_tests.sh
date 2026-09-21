@@ -24,6 +24,11 @@ for src in tests/*.txt; do
             sed 's/^/      /' "$TMP/err"
             fail=$((fail + 1)); continue
         fi
+        if [[ -e tests/$name.ast ]] && ! python3 compiler.py --ast "$src" | diff -q - "tests/$name.ast" >/dev/null; then
+            echo "FAIL $name: --ast does not match tests/$name.ast"
+            python3 compiler.py --ast "$src" | diff - "tests/$name.ast" | sed 's/^/      /'
+            fail=$((fail + 1)); continue
+        fi
     else
         if python3 compiler.py "$src" "$ll" 2>"$TMP/err"; then
             echo "FAIL $name: expected a compilation error"
