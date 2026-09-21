@@ -102,9 +102,9 @@ def parse(lines):
 
     if not statements:
         raise CompileError(1, 1, "the program is empty: it must end with 'exit'")
-    for statement in statements[:-1]:
+    for i, statement in enumerate(statements[:-1]):
         if statement[0] == "exit":
-            token = statement[1]
+            token = statements[i + 1][1]
             raise CompileError(token.line, token.col, "'exit' must be the last statement")
     if statements[-1][0] != "exit":
         last = statements[-1][1]

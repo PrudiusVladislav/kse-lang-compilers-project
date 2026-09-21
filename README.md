@@ -90,7 +90,7 @@ See `tests/ok_negative.txt`.
 ```
 lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, COLON
 compiler.py     statement recognition over tokens, semantic checks, IR via llvmlite.ir
-tests/          7 programs that run, 11 that must fail
+tests/          7 programs that run, 12 that must fail
 run_tests.sh    compiles, links and runs each test, compares against .expected
 Dockerfile      ubuntu:24.04 with llvm, clang and llvmlite
 ```

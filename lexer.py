@@ -43,7 +43,7 @@ class Token:
         category, sub = CATEGORIES[self.kind]
         text = "\\n" if self.kind == "endline" else self.text
         parts = [text, category] + ([sub] if sub else [])
-        return f"({', '.join(parts)})"
+        return f"({', '.join(parts)} @{self.line}:{self.col})"
 
 
 def is_alpha(b):
