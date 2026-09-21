@@ -1,854 +1,1351 @@
-AI usage log — Practice 2
+AI usage log — Practice 3
 Tool: Claude Code (Opus 5)
 
 Claude Code session transcript:
 <session>
-  ▐▛███▛█   Claude Code v2.1.270
- ▝▜██████▀  Opus 5 · Claude Max
-   ▝▝ ▝▝    ~/Documents/kse-lang-compilers/kse-lang-compilers-project
-
-
- ❯ need you to analyze the task 1 of the @w02-practice.pdf  firstly provide a
-     list of options I might have to choose from on each step of implementing it
-   or
-     any challanges I might face, but also be sure to take into account
-     the template suggested in the pdf - idea is that i would like to firstly
-   make
-     informed decisions on each important step, before implementing it. also
-     provide your recommendation on each of the options you provide
-   ⎿  Read w02-practice.pdf (129.4KB)
-
- ⏺ I read the PDF. Let me get the exact wording of Task 1 and the template so my
-   recommendations match the spec rather than my paraphrase.
-
-   Ran 2 shell commands (ctrl+o to expand)
-
- ⏺ The PDF read gave me the document, and there's existing week-1 work to build
-   on. Let me read the current compiler and tests so my recommendations fit what
-   you already have.
-
-   Read 4 files (ctrl+o to expand)
-
- ⏺ Now I have both the task spec and your week‑1 code. Here's the decision map
-   before you write anything.
-
-   What Task 1 actually asks
-
-   Extend the week‑1 language with control flow: an if/else conditional and a
-   while loop, plus comparison operators. The template in the PDF sketches a
-   Parser class with parse_statement dispatching on a leading keyword, an AST of
-   statement nodes, and a codegen walk that creates basic blocks via
-   builder.append_basic_block + builder.cbranch/builder.branch.
-
-   The important structural fact: your current compiler has no AST. parse_line
-   returns tuples and build emits IR in the same loop. Control flow forces a real
-   tree — nested bodies can't be a flat list of tuples. That's the single
-   biggest decision, and everything else follows from it.
-
-   ---
-
-   Step 1 — Program representation
-
-   ┌─────────────────────┬────────┬─────────────────────────────────────────┐
-   │       Option        │  Cost  │               Consequence               │
-   ├─────────────────────┼────────┼─────────────────────────────────────────┤
-   │ A. Keep flat        │ Low    │ Nesting breaks it. You'd hand-manage a  │
-   │ tuples, add jump    │ now    │ block stack. Dead end by the second     │
-   │ targets             │        │ nested loop.                            │
-   ├─────────────────────┼────────┼─────────────────────────────────────────┤
-   │ B. AST of           │ ~40    │ Matches the PDF template, nests         │
-   │ @dataclass nodes    │ lines  │ naturally, codegen becomes a recursive  │
-   │                     │        │ visit.                                  │
-   ├─────────────────────┼────────┼─────────────────────────────────────────┤
-   │ C. Full visitor     │        │ Premature for ~8 node types; fights     │
-   │ class hierarchy     │ High   │ your CLAUDE.md "no premature            │
-   │                     │        │ abstraction".                           │
-   └─────────────────────┴────────┴─────────────────────────────────────────┘
-
-   Recommendation: B. Small dataclasses — Decl, Assign, Exit, If(cond, then_body,
-   else_body), While(cond, body), and expression nodes Const, Var, BinOp(lhs,
-   op, rhs). then_body/body are list[Stmt], which is what makes nesting free.
-   This is also what the PDF template presumes, so you get spec alignment for
-   free.
-
-   ---
-
-   Step 2 — Block delimiters (how the parser knows a body ended)
-
-   This is the choice that most shapes the parser, and the PDF's template leans
-   one way.
-
-   ┌────────────────────┬────────────────┬──────────────────────────────────┐
-   │       Option       │    Grammar     │          Parser impact           │
-   ├────────────────────┼────────────────┼──────────────────────────────────┤
-   │ A. end keyword —   │ Line-based     │ Trivial: recurse until you see   │
-   │ if x > 0 ... end   │                │ end. No new lexer concepts.      │
-   ├────────────────────┼────────────────┼──────────────────────────────────┤
-   │ B. Braces { }      │ Token-based    │ Needs {/} tokens; tempts you off │
-   │                    │                │  line-oriented parsing.          │
-   ├────────────────────┼────────────────┼──────────────────────────────────┤
-   │ C. Indentation     │ Needs          │ Significant lexer work —         │
-   │ (Python-style)     │ INDENT/DEDENT  │ tab/space normalization, dedent  │
-   │                    │                │ stacks. Highest bug surface.     │
-   └────────────────────┴────────────────┴──────────────────────────────────┘
-
-   Recommendation: A (end). Your week‑1 design is strictly line-oriented and
-   regex-driven; end preserves that with zero lexer changes. Use else as its own
-   line. Concretely:
-
-   if x > 0
-     y := 1
-   else
-     y := 2
-   end
-   while n > 0
-     n := n - 1
-   end
-
-   Pick C only if the PDF's template explicitly shows indentation — it doesn't;
-   it shows keyword-dispatched statement parsing, which end serves directly.
-
-   ---
-
-   Step 3 — Parsing strategy
-
-   ┌──────────────────────────┬───────────────────────────────────────────────┐
-   │          Option          │                     Notes                     │
-   ├──────────────────────────┼───────────────────────────────────────────────┤
-   │ A. Keep regex-per-line,  │ Smallest diff from what works.                │
-   │ add recursion            │ parse_block(lines, i) returns (stmts,         │
-   │                          │ next_i).                                      │
-   ├──────────────────────────┼───────────────────────────────────────────────┤
-   │ B. Tokenizer + recursive │ The "proper" compilers-course answer. Needed  │
-   │  descent                 │ if expressions must nest ((a+b)*c).           │
-   ├──────────────────────────┼───────────────────────────────────────────────┤
-   │ C. Parser generator      │ Usually disallowed in these courses; check    │
-   │ (Lark/PLY)               │ the PDF's constraints before considering.     │
-   └──────────────────────────┴───────────────────────────────────────────────┘
-
-   Recommendation: A, with one caveat. Your current BINOP regex only handles a
-   single binary operation with no parens — x := a + b works, x := a + b * c does
-   not. If Task 1 requires nested expressions, regex collapses and you need B.
-   Check the task's example programs first; if every expression stays
-   two-operand, stay with A and save yourself several hours.
-
-   Cleanest shape for A:
-
-   def parse_block(lines, i, terminators):   # returns (stmts, i)
-
-   with the caller inspecting which terminator stopped it (else vs end) — that's
-   what lets if handle the optional else without duplicated code.
-
-   ---
-
-   Step 4 — Comparisons and the boolean type
-
-   LLVM icmp yields i1, but your whole language is i32.
-
-   ┌─────────────────────────────────────┬───────────────────────────────────┐
-   │               Option                │            Consequence            │
-   ├─────────────────────────────────────┼───────────────────────────────────┤
-   │ A. Conditions are expressions       │ Type-correct, no coercion. Can't  │
-   │ producing i1, usable only in        │ write flag := x > 0.              │
-   │ if/while                            │                                   │
-   ├─────────────────────────────────────┼───────────────────────────────────┤
-   │ B. Comparisons produce i32 (0/1);   │ C-like. Lets you store booleans.  │
-   │ conditions test != 0                │ Needs zext after every icmp.      │
-   └─────────────────────────────────────┴───────────────────────────────────┘
-
-   Recommendation: A unless the task asks for boolean variables. It's less code
-   and you avoid a second type in the symbol table. Emit via
-   builder.icmp_signed(op, lhs, rhs) with op in {"<", ">", "<=", ">=", "==",
-   "!="} — note llvmlite takes the operator as a string, which maps directly from
-   your source token. Watch the lexing order: match <= before <, or <= parses as
-   < followed by a stray =.
-
-   ---
-
-   Step 5 — Codegen and basic blocks
-
-   This is where most bugs will land. The three failure modes:
-
-   a) Terminator discipline. Every LLVM basic block needs exactly one terminator.
-   After emitting an if, if both branches ended in exit (which emits ret), the
-   merge block is unreachable and empty — llc will reject it. Guard with if not
-   builder.block.is_terminated: builder.branch(merge).
-
-   b) Where the merge block goes. Recommendation: create then/else/merge up
-   front, emit branches, and position_at_end(merge) before returning from the If
-   visitor. Create the merge block lazily only if you want to avoid empty blocks
-   — not worth it; the guard in (a) is simpler.
-
-   c) while block order. Three blocks: cond, body, after. Branch unconditionally
-   into cond (this matters — you can't fall through), cbranch from cond to
-   body/after, and branch from the end of body back to cond.
-
-   ┌──────────────────────────┬──────────────────────────────────────────────┐
-   │   Option for variables   │                    Notes                     │
-   ├──────────────────────────┼──────────────────────────────────────────────┤
-   │ A. Keep alloca +         │ What you already do. Loops work with zero    │
-   │ load/store per access    │ extra thought.                               │
-   ├──────────────────────────┼──────────────────────────────────────────────┤
-   │ B. SSA with phi nodes    │ Correct but you'd hand-build phis at every   │
-   │                          │ merge. Painful and unnecessary.              │
-   └──────────────────────────┴──────────────────────────────────────────────┘
-
-   Recommendation: A, emphatically. Your existing alloca approach is exactly why
-   loops will "just work" — mutation goes through memory, so no phi nodes are
-   needed. If the course wants to see mem2reg, run the LLVM opt pass rather than
-   writing SSA by hand.
-
-   One more: allocas must go in the entry block, not inside a loop body —
-   otherwise each iteration allocates fresh stack. Your decl currently emits
-   alloca at the builder's current position. Once int x can appear inside a while
-   body, this becomes a real bug. Fix by keeping a dedicated entry-block builder
-   for allocas.
-
-   ---
-
-   Step 6 — Semantic checks
-
-   Existing checks (undeclared, redeclared, exit last) need revisiting under
-   nesting:
-
-   - Scoping: flat global symbol table vs. block scopes. Recommend flat — matches
-     the week‑1 language, and block scoping adds a scope stack plus shadowing
-     rules for no pedagogical gain here.
-   - exit must be last: this rule gets awkward — is exit inside an if body legal?
-     Recommend requiring exit as the last top-level statement and rejecting it
-     inside any nested body. Simple to state, simple to check, keeps your "every
-     path terminates" guarantee trivially true.
-   - Decl inside a loop: with a flat symbol table this is a redeclaration error
-     on the second pass — but you only walk the AST once at compile time, so it's
-     naturally a single declaration. Fine either way; just be deliberate.
-
-   ---
-
-   Step 7 — Testing
-
-   Your run_tests.sh harness already does the right thing (compile → llc → clang
-   → compare stdout, and separately assert errors). Recommendation: keep it and
-   only add cases. Worth covering:
-
-   - ok_if, ok_else, ok_while, ok_nested (loop inside if, if inside loop)
-   - ok_while_zero — loop body executes zero times
-   - err_missing_end, err_else_without_if, err_exit_in_block
-
-   One harness gap worth closing: you compare stdout only, never the process exit
-   code. Fine for now since main always returns 0, but note it.
-
-   ---
-
-   The two decisions I'd lock down first
-
-   1. Does Task 1 require nested/parenthesized expressions? If yes → tokenizer +
-      recursive descent (Step 3B), and that roughly doubles the work. Everything
-      else is unaffected.
-   2. Is exit allowed inside if/while bodies? This determines whether you need
-      the terminator guard in Step 5a and changes your "exit must be last" check.
-
-   Both are answerable from the PDF's example programs. Tell me what they show —
-   or say "go" and I'll implement the recommended path (AST dataclasses,
-   end-delimited blocks, regex line parser, i1 conditions, alloca-in-entry-block
-   codegen) and wire up the new tests.
-
- ✻ Crunched for 1m 0s · done 0:13 AM
-
- ❯ so, I implemented task1, what about options for the task 2. also what about
-   the common pitfalls that our lecturer specifically mentioned:  when a program
-   allows to define a
-     variable with itself during the declaration e.g. int x {x} or something
-     similar; and also the setup should make it explicit about our approach to
-   handling
-     negative numbers (either support or do not support)
-
- ⏺ I'll look at what you actually implemented for Task 1 and re-read the PDF for
-   Task 2's spec before laying out options.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ Interesting — you built a lexer.py, not the control-flow extension I guessed
-   at. Let me read your actual Task 1 implementation and re-read the PDF for Task
-   2's real spec.
-
-   Read 2 files (ctrl+o to expand)
-
- ⏺ Now I have the real picture. My earlier guess about Task 1 was wrong — it's a
-   lexer task, and the language changed shape entirely: i32 x{0}
-   declaration-with-initializer, mut specifier, brace-delimited init expressions.
-   Let me re-read the PDF for Task 2's exact spec.
-
-   Read 1 file (ctrl+o to expand)
-
- ⏺ Now I have the real spec. Task 2 is the syntax layer: consume your lexer's
-   tokens, validate statements, enforce mut and declaration-before-use, and drive
-   the Practice‑1 builder. 1 point.
-
-   First, the two pitfalls your lecturer flagged — both are genuinely
-   underspecified in the PDF, and both are decisions you must make explicitly.
-
-   ---
-
-   Pitfall A — i32 x{x}: self-reference in the initialiser
-
-   The spec says "a variable is declared once, before its first use" and "used
-   before its declaration → error". It never says whether the variable being
-   declared counts as declared while its own initialiser is being checked.
-
-   Concretely, i32 x{x} and i32 x{x + 1} must do something deliberate.
-
-   ┌─────────────────────┬──────────────────────────┬───────────────────────┐
-   │       Option        │        Behaviour         │      Consequence      │
-   ├─────────────────────┼──────────────────────────┼───────────────────────┤
-   │ A. Insert into      │ i32 x{x} → variable 'x'  │ Reads exactly like    │
-   │ symbol table after  │ is used before its       │ the spec's own rule.  │
-   │ checking the        │ declaration at the       │ One error class, no   │
-   │ initialiser         │ column of the inner x    │ new message.          │
-   ├─────────────────────┼──────────────────────────┼───────────────────────┤
-   │ B. Insert before    │ Needs a new message: 'x' │ More precise wording, │
-   │ checking, then      │  cannot be used in its   │  but an extra rule to │
-   │ special-case        │ own initialiser          │  justify.             │
-   ├─────────────────────┼──────────────────────────┼───────────────────────┤
-   │                     │ i32 x{x} compiles; loads │ Silently wrong        │
-   │ C. Insert before,   │  uninitialised alloca →  │ output. This is the   │
-   │ don't special-case  │ garbage value            │ bug being warned      │
-   │                     │                          │ about.                │
-   └─────────────────────┴──────────────────────────┴───────────────────────┘
-
-   Recommendation: A. It's one line of ordering discipline — check the
-   initialiser expression, emit its IR, then register the name — and it makes the
-   pitfall impossible by construction rather than by a check you might forget.
-   You get the correct error with zero extra code, and the message you already
-   need for err_use_before_decl.
-
-   The ordering trap in code: it's tempting to write symbols[name] =
-   builder.alloca(...) first because you need the slot to store into. Don't.
-   Evaluate the initialiser value first, then alloca, then store. The alloca
-   itself doesn't need to be registered before evaluation.
-
-   Note the same ordering also correctly handles i32 x{5} followed by i32 x{6} →
-   redeclaration, since the second x is in the table by then.
-
-   Add a test: err_self_init.txt with i32 x{x}. This is precisely what the
-   lecturer will look for.
-
-   ---
-
-   Pitfall B — negative numbers
-
-   The spec is explicit on the lexer side and silent on the language side, which
-   is the gap:
-
-   ▎ number — decimal digits only; no sign
-
-   So - is always the minus operator token. Your lexer already does this
-   correctly. The question is what the syntax layer does with it, and you must
-   state your choice in the README.
-
-   Option: A. No negative literals. Unary minus is a syntax error.
-   i32 x{-5}: error: expected a constant or variable
-   x := 0 - 5: works, yields −5
-   Cost: Zero extra code. Matches the grammar as written.
-   ────────────────────────────────────────
-   Option: B. Allow unary minus in initialisers/RHS
-   i32 x{-5}: −5
-   x := 0 - 5: works
-   Cost: Extends the grammar beyond "a constant, a variable, or one operation on
-   two operands". Ambiguity with binary minus.
-   ────────────────────────────────────────
-   Option: C. Fold - into the number token in the lexer
-   i32 x{-5}: −5
-   x := 0 - 5: breaks: 0 - 5 lexes as 0 and -5
-   Cost: Wrong. Directly contradicts "no sign" and breaks subtraction.
-
-   Recommendation: A, documented. The spec's grammar is exactly "a constant, a
-   variable, or one operation on two constants or variables" — there's no
-   production for unary minus, and number is explicitly unsigned. Rejecting {-5}
-   is the faithful reading, not a limitation.
-
-   Important: negative values are still fully supported. i32 mut x{0} then x := 0
-   - 5 gives −5, arithmetic is signed i32 throughout, and printf %d prints it
-   correctly. The restriction is purely on literal syntax. Worth a test proving
-   it: ok_negative.txt doing 0 - 5 and exiting with Program exit with result -5.
-
-   Put one line in README.md:
-
-   ▎ Negative numbers: number literals are unsigned per the lexer spec; - is
-   ▎ always the binary subtraction operator. i32 x{-5} is rejected; write i32 mut
-   ▎ x{0} / x := 0 - 5. Values are signed 32-bit and may be negative.
-
-   That sentence is what makes it "explicit about our approach" in the way your
-   lecturer asked.
-
-   ---
-
-   Now the Task 2 decisions
-
-   Step 1 — Where the syntax layer lives
-
-   ┌────────────────────────────────┬────────────────────────────────────────┐
-   │             Option             │                 Notes                  │
-   ├────────────────────────────────┼────────────────────────────────────────┤
-   │ A. parser.py beside lexer.py,  │ Clean phase separation; matches        │
-   │ both imported by compiler.py   │ Practice 3 ("builds the parser on      │
-   │                                │ these tokens").                        │
-   ├────────────────────────────────┼────────────────────────────────────────┤
-   │ B. All in compiler.py,         │ Fewer files; spec only mandates        │
-   │ importing only lexer           │ compiler.py + tests/.                  │
-   └────────────────────────────────┴────────────────────────────────────────┘
-
-   Recommendation: B for now. The whole layer is ~120 lines, and the spec's
-   required layout is compiler.py at the root. Practice 3 replaces this
-   line-validator with a real parser anyway — splitting now creates a file you'll
-   gut next week. Keep lexer.py separate (it's a graded deliverable on its own),
-   everything else in compiler.py.
-
-   Step 2 — Statement recognition
-
-   Your lexer returns a list of lines, each a list of tokens. That was a good
-   call — it makes this trivial.
-
-   ┌────────────────────────────────────┬────────────────────────────────────┐
-   │               Option               │               Notes                │
-   ├────────────────────────────────────┼────────────────────────────────────┤
-   │ A. Dispatch on the first token's   │ Direct, matches "one statement per │
-   │ kind (kw_i32 / ident / kw_exit)    │  line". ~3 branches.               │
-   ├────────────────────────────────────┼────────────────────────────────────┤
-   │ B. Token-cursor recursive descent  │ What Practice 3 wants. Overkill    │
-   │                                    │ for a fixed 3-statement grammar.   │
-   └────────────────────────────────────┴────────────────────────────────────┘
-
-   Recommendation: A. With kw_i32 → declaration, ident → assignment, kw_exit →
-   exit, anything else → "not a statement" error at that token's position. Then
-   verify each line is fully consumed — the spec explicitly lists "extra tokens
-   on a line" as an error, so after matching a statement shape, assert the next
-   token is endline or end-of-line, and report the offending token's line:col if
-   not.
-
-   That trailing-token check is the single easiest point to lose marks on. exit y
-   z must fail.
-
-   Step 3 — Carrying mut through the symbol table
-
-   Your Practice‑1 symbols maps name → alloca. Now it needs mutability.
-
-   ┌──────────────────────────────┬──────────────────────────────────────────┐
-   │            Option            │                  Notes                   │
-   ├──────────────────────────────┼──────────────────────────────────────────┤
-   │ A. symbols[name] = (slot,    │ Two-element tuple, unpacked at two       │
-   │ is_mut)                      │ sites. Minimal.                          │
-   ├──────────────────────────────┼──────────────────────────────────────────┤
-   │ B. Small Symbol dataclass    │ Named fields; a little more ceremony.    │
-   └──────────────────────────────┴──────────────────────────────────────────┘
-
-   Recommendation: A. Two fields, two call sites. A dataclass here is the
-   premature abstraction your CLAUDE.md warns against. Assignment then checks
-   is_mut and reports at the target token's column — the spec's example is line
-   2:1: cannot assign to 'x': it is not mut, i.e. column 1, the identifier
-   itself, not the :=.
-
-   Step 4 — Error positions
-
-   This is where the point is actually won or lost. Every message needs line:col
-   of the token that caused it. Map them deliberately:
-
-   ┌────────────────────┬────────────────────────────────────────────────────┐
-   │       Error        │                      Position                      │
-   ├────────────────────┼────────────────────────────────────────────────────┤
-   │ use before         │ the offending identifier token                     │
-   │ declaration        │                                                    │
-   ├────────────────────┼────────────────────────────────────────────────────┤
-   │ assign to non-mut  │ the target identifier (col 1 per the spec's        │
-   │                    │ example)                                           │
-   ├────────────────────┼────────────────────────────────────────────────────┤
-   │ missing            │ spec shows line 1:9 for i32 x — that's past the    │
-   │ initialiser        │ name, i.e. where { was expected                    │
-   ├────────────────────┼────────────────────────────────────────────────────┤
-   │ redeclaration      │ the name token                                     │
-   ├────────────────────┼────────────────────────────────────────────────────┤
-   │ extra tokens       │ the first extra token                              │
-   ├────────────────────┼────────────────────────────────────────────────────┤
-   │ not a statement    │ the first token of the line                        │
-   └────────────────────┴────────────────────────────────────────────────────┘
-
-   The missing-initialiser column is the fiddly one: for i32 x (6 bytes), col 9
-   in the spec's example implies a longer name — the rule is end of the name
-   token, i.e. name.col + len(name.text). Since your lexer stores col of the
-   first byte and the text, that's computable. Worth getting right; it's a listed
-   error.
-
-   Step 5 — Blank lines
-
-   The spec's test list explicitly says "odd spacing and blank lines". Your lexer
-   appends a line of tokens on each \n, so a blank line yields a list containing
-   only an endline token. Skip lines whose only token is endline in the syntax
-   layer. Cheap, and it's a named test requirement.
-
-   Also check: exit must be the last line — with blank lines allowed after it.
-   Decide whether trailing blank lines after exit are legal (recommend: yes, skip
-   them before the "is this last?" check).
-
-   Step 6 — Tests
-
-   You need ≥5 valid and ≥5 invalid, each with an expected-output file. Your
-   existing run_tests.sh already does exactly the right thing and needs no change
-   — but your current tests/ are all Practice‑1 syntax (int x, x := 5) and will
-   all fail against the new grammar. Plan to rewrite them.
-
-   Mapping the spec's required coverage plus the two pitfalls:
-
-   Valid (7): ok_const · ok_mut · ok_init_op ({2+5}) · ok_exit_const (exit 42) ·
-   ok_spacing (tabs, blank lines, { x + 10 }) · ok_worked (the PDF's 70-example —
-   they will run this one) · ok_negative (pitfall B)
-
-   Invalid (7): err_unknown_byte ($) · err_unclosed_brace · err_assign_const ·
-   err_use_before_decl · err_no_init · err_self_init (pitfall A) ·
-   err_extra_tokens
-
-   ok_worked and the two pitfall tests are the highest-value additions — the
-   first because the submission section says the teacher will run it, the latter
-   two because your lecturer named them.
-
-   ---
-
-   What I'd lock in
-
-   1. Register the name after evaluating its initialiser — kills i32 x{x} by
-      construction, no special case.
-   2. No negative literals, documented in README — faithful to the grammar;
-      negative values still work via 0 - 5, with a test to prove it.
-   3. Dispatch-on-first-token in compiler.py, (slot, is_mut) symbols, strict
-      end-of-line check.
-   4. Rewrite tests/ to the new grammar — the old ones are dead.
-
-   Say "go" and I'll implement it against your existing lexer, rewrite the test
-   suite, and add the README section. Or if you'd rather decide the
-   negative-number question the other way (allow {-5}), tell me and I'll adjust —
-   it's the one choice here where a defensible case exists both ways.
-
- ✻ Baked for 1m 3s · done 1:09 AM
-
- ※ recap: You're extending your KSE compiler for Practice 2 Task 2, the syntax layer that turns lexer tokens into IR with mut and declaration-before-use checks. I've laid out the options and recommendations; next you decide on negative literals and say go to implement. (disable recaps in /config)
-
- ❯ now, need you to write all the needed corresponding tests for the task1 + 2,
-   and write a concise readme according the pdf desciption
-
- ⏺ I need to see the current state of compiler.py — my last plan was a proposal,
-   and I don't know whether you've implemented Task 2 yet. That determines
-   whether tests should pass now or describe intended behavior.
-
-   Read 1 file, ran 1 shell command (ctrl+o to expand)
-
- ⏺ Task 2 is implemented. The tests/ listing failed because the shell aborted on
-   the missing README — let me check the tests and verify the toolchain works.
-
-   Ran 2 shell commands (ctrl+o to expand)
-
- ⏺ As predicted, all 6 existing tests are dead Practice‑1 syntax. The toolchain
-   isn't on the host — that's what the Dockerfile is for. Let me check Docker and
-   clear out the stale tests.
-
-   Ran 2 shell commands (ctrl+o to expand)
-
- ⏺ Docker is running, so I can verify tests for real against the full LLVM
-   toolchain. Let me build the image while I write the tests.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ Image built. Now the test suite. The PDF requires ≥5 valid and ≥5 invalid,
-   covering specific cases; I'm writing 7 of each to also cover the two pitfalls
-   your lecturer named.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ Now the seven valid programs, including the PDF's worked example that the
-   teacher will run:
-
- ⏺ Write(tests/ok_worked.txt)
-   ⎿  Wrote 6 lines to tests/ok_worked.txt
-       1 i32 x{0}
-       2 i32 mut y{10}
-       3 i32 z{2+5}
-       4 i32 mut t { x + 10 }
-       5 t := t * z
-       6 exit t
-
- ⏺ Write(tests/ok_worked.expected)
-   ⎿  Wrote 1 line to tests/ok_worked.expected
-       1 Program exit with result 70
-
- ⏺ Write(tests/ok_const.txt)
-   ⎿  Wrote 2 lines to tests/ok_const.txt
-       1 i32 x{5}
-       2 exit x
-
- ⏺ Write(tests/ok_const.expected)
-   ⎿  Wrote 1 line to tests/ok_const.expected
-       1 Program exit with result 5
- ⏺ Write(tests/ok_mut.txt)
-   ⎿  Wrote 4 lines to tests/ok_mut.txt
-       1 i32 mut counter{1}
-       2 counter := counter + 4
-       3 counter := counter * 3
-       4 exit counter
-
- ⏺ Write(tests/ok_mut.expected)
-   ⎿  Wrote 1 line to tests/ok_mut.expected
-       1 Program exit with result 15
-
- ⏺ Write(tests/ok_init_op.txt)
-   ⎿  Wrote 4 lines to tests/ok_init_op.txt
-       1 i32 a{6}
-       2 i32 b{a * 7}
-       3 i32 c{b - a}
-       4 exit c
-
- ⏺ Write(tests/ok_init_op.expected)
-   ⎿  Wrote 1 line to tests/ok_init_op.expected
-       1 Program exit with result 36
-
- ⏺ Write(tests/ok_exit_const.txt)
-   ⎿  Wrote 1 line to tests/ok_exit_const.txt
-       1 exit 42
-
- ⏺ Write(tests/ok_exit_const.expected)
-   ⎿  Wrote 1 line to tests/ok_exit_const.expected
-       1 Program exit with result 42
-
- ⏺ The spacing test needs literal tabs and blank lines, so I'll write it with
-   printf to make the whitespace exact rather than trusting an editor to preserve
-   it.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ cat -A is GNU-only; the files were written before that failed. Let me verify
-   with the BSD equivalent.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ Tabs (^I) and blank lines are exact: x=2, y=2+3=5, y=5*2=10. Now the seven
-   invalid programs. The error messages must match what the compiler actually
-   emits, so I'll write the inputs first and derive expected output by running
-   them.
-
- ⏺ Write(tests/err_unknown_byte.txt)
-   ⎿  Wrote 3 lines to tests/err_unknown_byte.txt
-       1 i32 x{5}
-       2 i32 y{x $ 2}
-       3 exit y
-
- ⏺ Write(tests/err_unclosed_brace.txt)
-   ⎿  Wrote 2 lines to tests/err_unclosed_brace.txt
-       1 i32 x{5
-       2 exit x
-
- ⏺ Write(tests/err_assign_const.txt)
-   ⎿  Wrote 3 lines to tests/err_assign_const.txt
-       1 i32 x{1}
-       2 x := 2
-       3 exit x
-
- ⏺ Write(tests/err_use_before_decl.txt)
-   ⎿  Wrote 3 lines to tests/err_use_before_decl.txt
-       1 i32 x{y}
-       2 i32 mut y{10}
-       3 exit x
-
- ⏺ Write(tests/err_no_init.txt)
-   ⎿  Wrote 2 lines to tests/err_no_init.txt
-       1 i32 total
-       2 exit total
-
- ⏺ Write(tests/err_self_init.txt)
-   ⎿  Wrote 2 lines to tests/err_self_init.txt
-       1 i32 mut x{x}
-       2 exit x
-
- ⏺ Write(tests/err_negative_literal.txt)
-   ⎿  Wrote 2 lines to tests/err_negative_literal.txt
-       1 i32 x{-5}
-       2 exit x
-
- ⏺ I need one more invalid test — extra tokens on a line — then I'll run all of
-   them in Docker to capture the real error messages.
-
- ⏺ Write(tests/err_extra_tokens.txt)
-   ⎿  Wrote 2 lines to tests/err_extra_tokens.txt
-       1 i32 x{7}
-       2 exit x 3
-
- ⏺ Now let me run every error case in Docker to capture the compiler's actual
-   messages, rather than guessing at columns:
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ All eight behave correctly, and two confirm the pitfalls are handled:
-   err_self_init catches i32 mut x{x} at col 11 (the inner x), and
-   err_use_before_decl reports line 1:7 — exactly matching the PDF's own example.
-   Let me write the expected files.
-
-   One discrepancy to note: the PDF's example for a missing initialiser is line
-   1:9 but ours reports col 5 (the name's start, not its end). I'll return to
-   that.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ Now let me add a negative-value test proving negative results still work via
-   subtraction (the counterpart to rejecting {-5}), and run the full suite in
-   Docker.
-
-   Listed 1 directory (ctrl+o to expand)
- ⏺ 8 valid + 8 invalid, exceeding the required 5+5. Now the full suite against
-   the real LLVM toolchain:
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ 15 passed, but 16 tests exist — ok_worked ran, so something was skipped. The
-   harness globs tests/*.txt, so one file isn't being picked up. Let me find it.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ Only 15 .txt files exist — I miscounted. err_redeclared was in the old
-   Practice‑1 suite and I removed it without writing a replacement, but the PDF
-   explicitly lists "a variable declared twice" as a required error. Let me add
-   it.
-
- ⏺ Write(tests/err_redeclared.txt)
-   ⎿  Wrote 3 lines to tests/err_redeclared.txt
-       1 i32 x{1}
-       2 i32 mut x{2}
-       3 exit x
-
- ⏺ The PDF also lists "a program without exit" and "a line that is not one of the
-   three statements" as required errors. Let me add those two and capture all
-   three messages.
-
- ⏺ Write(tests/err_no_exit.txt)
-   ⎿  Wrote 2 lines to tests/err_no_exit.txt
-       1 i32 mut x{1}
-       2 x := x + 2
-
- ⏺ Write(tests/err_not_a_statement.txt)
-   ⎿  Wrote 3 lines to tests/err_not_a_statement.txt
-       1 i32 x{1}
-       2 mut x
-       3 exit x
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ All three behave sensibly. Let me write their expected files and run the
-   complete suite.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ 18/18 — 7 valid, 11 invalid, covering every error the PDF names. Let me verify
-   the two submission demos the teacher will ask for: the lexer's token output
-   on the worked example, and lli on the valid program.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ Both submission demos match the PDF exactly — the token list is
-   character-for-character what page 2 shows, and lli prints 70. Now the README.
-
- ⏺ Write(README.md)
-   ⎿  Wrote 96 lines to README.md
-        1 # Practice 2 — a lexer as a state machine
-        2
-        3 A compiler for a small language of 32-bit integers. `lexer.py` t
-        4 into typed tokens; `compiler.py` reads only those tokens and emi
-          ts LLVM IR through
-        5 the `llvmlite.ir` builder.
-        6
-        8
-        9 ```sh
-       10 python3 compiler.py input.txt output.ll
-      … +105 lines (ctrl+o to expand)
-
- ⏺ Let me verify the README's claims are accurate rather than trusting them.
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ Counts and pairing confirmed. One last thing — the .gitignore should cover the
-   build artifacts, and there are stale Practice-1 files lying around.
-
-   Listed 1 directory (ctrl+o to expand)
-
- ⏺ .gitignore already covers output.ll/output.o, venv/, __pycache__/ and
-   .DS_Store. The four stale files are Practice‑1 leftovers — input.txt still
-   uses the old int x syntax and would fail to compile now. I'll leave them for
-   you to decide on rather than deleting unprompted.
-
-   Final full-suite run to confirm the committed state is green:
-
-   Ran 1 shell command (ctrl+o to expand)
-
- ⏺ 18/18 passing against the real LLVM toolchain.
-
-   Two things in that status I didn't do and should flag: a Makefile is staged as
-   added, and .gitignore, compiler.py, input.txt and run_tests.sh show as
-   modified — those are pre-existing staged changes from your own work, not mine.
-   My changes are the tests/ rewrite and the untracked README.md.
-
-   Tests — 7 valid, 11 invalid
-
-   Exceeds the required 5+5, and covers every error the PDF names.
-
-   Valid:
-
-   ┌───────────────────┬────────────────────────────────────────────────────┐
-   │       Test        │                       Covers                       │
-   ├───────────────────┼────────────────────────────────────────────────────┤
-   │ ok_worked         │ the PDF's own example → 70 (the teacher runs this) │
-   ├───────────────────┼────────────────────────────────────────────────────┤
-   │ ok_const / ok_mut │ const and mut declarations, reassignment           │
-   ├───────────────────┼────────────────────────────────────────────────────┤
-   │ ok_init_op        │ initialiser with an operation                      │
-   ├───────────────────┼────────────────────────────────────────────────────┤
-   │ ok_exit_const     │ exit 42                                            │
-   ├───────────────────┼────────────────────────────────────────────────────┤
-   │ ok_spacing        │ literal tabs, blank lines, {  x+3  }               │
-   ├───────────────────┼────────────────────────────────────────────────────┤
-   │ ok_negative       │ negative values work → -5                          │
-   └───────────────────┴────────────────────────────────────────────────────┘
-
-   Invalid: err_unknown_byte, err_unclosed_brace, err_assign_const,
-   err_use_before_decl, err_no_init, err_redeclared, err_no_exit,
-   err_not_a_statement, err_extra_tokens, plus the two pitfalls: err_self_init
-   and err_negative_literal.
-
-   I derived every .expected by running the compiler rather than guessing
-   columns.
-
-   The two pitfalls verified
-
-   - i32 mut x{x} → line 1:11: variable 'x' is used before its declaration — col
-     11 is the inner x. Your ordering (evaluate initialiser, then register the
-     name) makes this correct by construction.
-   - i32 x{-5} → line 1:7: negative numbers are not supported, while n := n - 5
-     gives -5. Both directions are now pinned by tests, and the README states the
-     choice explicitly.
-
-   Also confirmed your lexer's output on the PDF's worked example is
-   character-for-character identical to page 2, and lli prints Program exit with
-   result 70.
-
-   One thing worth your attention
-
-   The PDF's missing-initialiser example is line 1:9: variable 'x' needs an
-   initialiser in {}. Yours reports the start of the name; the PDF's column
-   points past it (name.col + len(name.text)). For i32 total we emit col 5, the
-   PDF's convention would give col 10.
-
-   The spec says "the exact wording is yours; the line:column and the exit code
-   are not" — so this may cost you. It's a one-line fix in parse_decl
-   (compiler.py:62) if you want to match. I left it alone since it's a behavior
-   change, not a test.
-
-   Stale Practice‑1 files (input.txt, test.ll, test_broken.ll, test_fixed.ll) are
-   still present — input.txt uses the old int x syntax and no longer compiles.
-   Worth deleting or updating before the PR, your call.
-
- ✻ Crunched for 2m 58s · done 1:17 AM
+ ▐▛███▛█   Claude Code v2.1.278
+▝▜██████▀  Opus 5 · Claude Max
+  ▝▝ ▝▝    ~/Documents/kse-lang-compilers/kse-lang-compilers-project
+
+
+❯ Read w03-practice.pdf, CLAUDE.md, README.md, lexer.py and compiler.py.
+
+  Don't plan or write anything yet. Just tell me, in one page:
+
+  1. Which parts of the current compiler.py survive into practice 3 unchanged,
+     which get moved, and which die.
+  2. The handout says the parser gets a --ast flag and codegen becomes a tree
+     walk. My current parse_* functions return tuples and evaluate calls
+     builder.add directly. Name the specific coupling points I'll have to cut.
+  3. Three places where my current code will resist this refactor — where the
+     practice-2 design made an assumption that a tree doesn't share.
+
+  Ask me questions if anything in the handout is ambiguous.
+
+⏺ I'll read the four files plus the handout.
+
+  Read 3 files, listed 1 directory (ctrl+o to expand)
+
+⏺ Now the handout.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Text extraction isn't available on the host. Let me try a couple of routes.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ pypdf imported without error (no message). Let me extract.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Read everything. Here's the one-page assessment.
+
+  ---
+
+  1. What survives, moves, dies
+
+  Survives unchanged
+  - All of lexer.py. The handout says so explicitly (p.5: "The lexer does not
+    change"). Every token a chain needs already exists. CompileError stays the
+    shared error type, still raised from three places (lexer, parser, walk) and
+    still caught in one place.
+  - main() — apart from argv handling for --ast.
+  - The whole module/printf/fmt-global preamble in build()
+    (compiler.py:116-128). Rename "practice2".
+  - Symbol table semantics: Var, the three checks (declared-once,
+    declared-before-use, mut-before-:=), and their message wording.
+  - The tests/ suite. It's the regression proof that Task 3 didn't change the
+    IR.
+
+  Moves
+  - parse_decl/parse_assign/parse_exit/parse_operand/expect → methods on a
+    Parser class that owns (lines, toks, pos). The logic of decl (i32, optional
+    mut, name, brace, value, brace) transfers almost line-for-line; what changes
+    is how it reads tokens.
+  - parse()'s post-loop exit checks (compiler.py:103-111) → into parse_program,
+    but they need a rewrite, see §3.
+  - load() and evaluate() (compiler.py:133-147) →
+    visit_var/visit_const/visit_binop. BINOPS (compiler.py:10) and the emit dict
+    (compiler.py:131) merge into one op→builder-method map keyed by the
+    operator text now stored on BinOpNode.
+  - The three statement branches of the for loop in build() →
+    visit_decl/visit_assign/visit_exit.
+
+  Dies
+  - parse_expr's end parameter and everything built on it: the brace-scanning
+    next(...) in parse_decl (compiler.py:64), the if i != end extra-token checks
+    (compiler.py:49-50, 68-70). Replaced by a while peek() loop plus one "line
+    must be empty" check in parse_program.
+  - Every tuple shape: ("const", …), ("var", …), ("value", …), ("binop", …),
+    ("decl", …), ("assign", …), ("exit", …).
+  - Positional indexing into statements — statement[0], statements[i+1][1],
+    statement[2].
+  - The "value" wrapper node. A single operand is just a ConstNode/VarNode under
+    the new grammar; there's no unary level.
+
+  2. Coupling points to cut
+
+  1. Tuples carry tokens; nodes carry line/col. ("const", int, token) and
+     ("decl", name_token, …) store the Token object and the walk reaches through
+     it (token.line, name.text). The handout is explicit: "The tree holds
+     names, numbers, flags and child nodes — never a token." So every
+     constructor takes (line, col, …) and the walk's CompileError(...) calls
+     read node.line, node.col.
+  2. evaluate/load are closures over builder and symbols. They're defined inside
+     build() precisely so they can call builder.add without threading state.
+     Codegen becomes a CodeGen class (or codegen(builder, symbols) per node)
+     with self.builder, self.symbols, self.printf, self.fmt as fields.
+  3. load() is typed to operands only, evaluate() to one level.
+     emit[op](load(left), load(right)) assumes both children are leaves. A chain
+     makes children arbitrary ExprNodes, so it becomes self.visit(node.left)
+     recursing — one uniform visit entry, no leaf/non-leaf split.
+  4. parse_expr(tokens, i, end) needs the closing } index before it starts.
+     That's the end-delimiter contract; a while peek() loop replaces it, and the
+     } is just expect("rbrace", …) after the expression returns.
+  5. Argv shape. if len(argv) != 3 (compiler.py:181) hard-codes exactly two
+     args. --ast takes one, and must write nothing.
+  6. build() both checks and emits, in one pass, keyed by string tags. Split:
+     parser raises syntax errors, the walk raises semantic errors.
+
+  3. Three places the practice-2 design will resist
+
+  a) The lexer's brace balancing is a mini-parser inside the lexer. brace_col
+  (lexer.py:61, 73-75, 89-96) rejects { inside {, } without {, unclosed { at end
+  of line. Harmless this week — the language still has no nesting — but it's
+  the front end asserting a grammatical fact, and the handout puts grammatical
+  facts in the parser. It'll also bite the moment parentheses arrive. Leave it,
+  but note the two positions differ: the lexer reports the brace column, a
+  parser would report the offending token's.
+
+  b) parse() identifies statements by tuple tag and grabs statement[1] as "the
+  token to blame." Lines 105-111 do statements[i+1][1] for the after-exit error
+  and statements[-1][1] for the missing-exit error. That works only because
+  every tuple happens to hold a token in slot 1 — decl's name, assign's name,
+  exit's exit keyword. It's exactly the "for a statement after exit, blame the
+  statement, not the exit" rule in CLAUDE.md, and it's held together by
+  positional luck. With ProgramNode(statements, exit) the exit node is
+  structurally separate, so the check becomes "did we already have an exit node
+  when this line arrived" — and node.line/node.col is uniform. But: ExitNode is
+  now the node that blames itself, and DeclNode/AssignNode carry the name's
+  position, not the statement's first token. For i32 x{1} after exit, practice 2
+  blames column of x; the handout says "the position of the first byte of the
+  token that caused the error." Check your existing .expected files — this is a
+  silent column change.
+
+  c) "End of line" has no position in the current design. The handout adds a
+  specific rule: when a line ends too early (x := x +), report "the column right
+  after the last token of that line." Your expect() (compiler.py:22-24) does
+  end = tokens[-1] and reports the last token's own column. For x := x + that's
+  the column of +, not +'s column plus 1. Every "found end of line" test will
+  need its column recomputed — and per CLAUDE.md, by hand.
+
+  Questions before you plan
+
+  1. Statement-blame column (3b). Do you want to keep practice-2's columns for
+     the after-exit / missing-exit errors (which means storing the statement's
+     first token position on the node, separate from the name position the
+     handout asks for), or take the handout's node-position and regenerate those
+     .expected files? The handout's node table says line, col is "the name for
+     a declaration or an assignment" — which conflicts with blaming the
+     statement start.
+  2. endline tokens. Your lexer emits them and parse() filters them out
+     (compiler.py:90). The handout's skeleton assumes per-line vectors with no
+     terminator ("peek() returning nothing means end of statement"). Do you want
+     to keep endline for make tokens output fidelity and filter in the Parser
+     constructor, or stop emitting them? Keeping them is less churn but means
+     the "column right after the last token" is available on the endline token —
+     which actually solves 3c for free.
+  3. Codegen shape. Visitor class or codegen() per node? The handout allows
+     either; the visitor is what Practice 4's "separate semantic pass" wants,
+     and it's what "the nodes know nothing about IR" implies. I'd take the
+     visitor.
+  4. op token kind. The handout's skeleton checks tok.kind == "op"; your lexer
+     emits plus/minus/star. Fine either way — but that's the one place the
+     handout's sample code doesn't match your token table, and Task 1 asks you
+     to verify exactly that correspondence. Your grammar's terminals should be
+     "+" "-" "*" (the text), which you have.
+  5. grammar.ebnf as a file or a comment block? Handout allows both. A file is
+     easier to show the teacher and doesn't fight CLAUDE.md's no-banner-comments
+     rule.
+
+✻ Baked for 55s · done Monday 11:46 PM
+
+※ recap: Goal: refactor the practice-3 compiler into a recursive-descent parser with an AST. I've read the handout and code and given you the survives/moves/dies breakdown plus five open questions; next is your answers, especially on statement-blame columns and codegen shape. (disable recaps in /config)
+
+❯ /grilling i am done with the ebnf file. do a small review of it against the
+handout's Task 1
+criteria and against lexer.py
+
+⏺ I'll read the grammar file first.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 📏 Sizing: small — budgeting 1 round, ≤4 questions.
+
+  The grammar is good. It's 7 rules (in the 6–8 band), every terminal matches a
+  real token, the [ "mut" ] optional is correct, exit_stmt correctly takes
+  operand and not value, and you correctly documented the two exclusions Task 1
+  asks for (semantics out, ident/number spelling is the lexer's). Three things
+  to put to you.
+
+  Verified against lexer.py: "i32"/"mut"/"exit" → KEYWORDS (lexer.py:3);
+  "{"/"}"/"+"/"-"/"*" → SINGLES (lexer.py:18-24); ":=" → the COLON state
+  (lexer.py:120-125); ident/number → IDENT/NUMBER. No terminal in your grammar
+  lacks a token. Nothing missing — the lexer is complete for this grammar.
+
+  ---
+
+  ❓ Q1 — Does value stay at Practice 2, or become the Task 4 three-level
+  grammar?
+
+  Task 1 says "the whole Practice 2 language" and its own example is the
+  Practice 2 decl. Your file is a faithful Practice 2 grammar. But Task 4 says
+  "Replace value with three rules," and the submission list asks for
+  grammar.ebnf as a single deliverable — shown to the teacher alongside the Task
+  4 program printing 120. So the file you hand over has two possible readings:
+
+  - (a) Keep Practice 2 value as-is, add the three Task 4 rules below it in the
+    same file, marked as the Task 4 replacement. Both states visible, the
+    progression is the point of the practice.
+  - (b) Keep only Practice 2 now, rewrite value → expr/term/factor when you do
+    Task 4. One grammar, always matching the parser.
+  - (c) Jump straight to expr/term/factor now, drop value.
+
+  ➡️ (b). The grammar's job is to describe the parser you actually have; two
+  value definitions in one file is a grammar that doesn't parse. Task 1 asks for
+  Practice 2 and you have it — bank the 0.5. When you write parse_expr, rewrite
+  the rule in the same commit, and the diff in the PR is the demonstration of
+  "the grammar does the work." One caveat if you pick this: your operand becomes
+  factor under the Task 4 naming, and exit_stmt must keep pointing at it.
+
+  ---
+
+  ❓ Q2 — program ::= { statement } exit_stmt cannot express "exactly one exit,
+  and it is last." Leave it, or comment it?
+
+  Your rule is right and is the standard way to say this — exit_stmt outside the
+  repetition forces it last and forces exactly one, since statement can't
+  derive an exit. That's genuinely structural, not semantic. But the handout's
+  error list includes "a statement after exit; a program without exit" under
+  parser errors (p.3), and a reader checking your grammar against your parser
+  will want to see that those two errors are the grammar being enforced, not an
+  extra check bolted on.
+
+  - (a) Leave as-is. The rule already says it.
+  - (b) Add one line to the trailing comment block noting that this rule is what
+    rejects a statement after exit and a program with none.
+
+  ➡️ (b), one line. It costs nothing and it's exactly the "check it against the
+  lexer/parser" reflex Task 1 is grading. Related: your current parser raises
+  "the program is empty" at a hardcoded 1:1 (compiler.py:104) — worth confirming
+  the empty-program case still has a defensible position when parse_program is
+  rewritten, since there's no token to point at.
+
+  ---
+
+  ❓ Q3 — Blank lines: comment only, or a rule?
+
+  Task 1 explicitly says "Remember that a line holds one statement, that blank
+  lines are allowed, and that exit ends the program." You handle the first and
+  third in the grammar; blank lines are covered by your comment, and your {
+  statement } does implicitly permit zero-or-more so nothing is wrong. The
+  question is whether the grader is looking for it stated.
+
+  - (a) Comment is enough — a blank line produces no tokens, so it's a lexical
+    fact, same category as how an identifier is spelled.
+  - (b) Make it explicit in the grammar with an endline/line-structure terminal.
+
+  ➡️ (a), but sharpen the wording. Your current comment says the line loop
+  "consumes the endline token" — that's a parser implementation note in a
+  grammar file, and it also isn't quite what compiler.py:90 does today (it
+  filters them). Better: state that line structure is lexical, one statement per
+  line, and a line with no tokens is skipped. That answers the handout's prompt
+  directly without inventing a terminal.
+
+  ---
+
+  🧩 Assuming unless you say otherwise:
+  - The file stays grammar.ebnf rather than moving into a compiler.py comment
+    block — it's a submission artifact and CLAUDE.md disfavours comment banners.
+  - ::=, [ ], { }, | notation stays exactly as the handout defines it; no EBNF
+    dialect swap.
+  - Rule names stay as-is (exit_stmt avoiding the exit keyword collision is the
+    right call, and operand is the handout's own word on p.2).
+  - No changes to lexer.py — the grammar needs no terminal it doesn't emit,
+    which is the answer Task 1's "note it" clause is fishing for.
+
+✻ Sautéed for 29s · done Monday 11:57 PM
+
+❯ now lets get to next tasks:
+  - i wrote the AST node classes and every parse_* method myself. I want to
+    understand recursive descent
+  - i wrote parse_expr/parse_term and parse_factor for task 4 myself, alone.
+  - you write the --ast cli plumbing, the dump() method, the test files and
+    their .expected/.ast, the README and Makefile updates
+  - Task 3 (moving codegen off tokens onto the tree) will be fully on you.
+  currently just provide me a plan for my steps and wait for to implement them
+  and I will then return to make you do your part of steps
+
+⏺ Clear split. Let me look at what's on disk before planning, so my steps
+  reference what you actually have.
+
+  Listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+⏺ compiler.py is still untouched practice-2 code, grammar.ebnf is staged but
+  uncommitted, 7 ok + 12 err tests exist. Here's your plan.
+
+  ---
+
+  Your steps
+
+  Step 0 — commit the grammar first
+
+  It's staged and unrelated to the parser work. Land it alone so Task 1 is
+  banked and the parser diff stays readable.
+
+  feat [practice-3]: add task-1 grammar in ebnf
+
+  Apply the Q2/Q3 wording fixes from the review before committing, and leave
+  value as the Practice-2 single-operation rule — you'll rewrite it to
+  expr/term/factor in Step 4, same commit as parse_expr.
+
+  ---
+
+  Step 1 — the node classes
+
+  New file or top of compiler.py? Put them in compiler.py. Practice 4 adds a
+  semantic pass and Stage 1 reuses the hierarchy, so a split is coming — but
+  splitting now means three files for one week and an import cycle risk with
+  CompileError. Per CLAUDE.md's no-premature-abstraction rule, one file until it
+  hurts.
+
+  Order matters — CLAUDE.md wants constants, then helpers, then callers, then
+  entry point. The nodes go above the Parser.
+
+  The handout's tree (p.2–3), with the field names it specifies:
+
+  Node        line, col
+  ├── ProgramNode    statements, exit
+  ├── StmtNode       (abstract)
+  │   ├── DeclNode   name, mutable, init
+  │   └── AssignNode name, value
+  ├── ExitNode       value
+  └── ExprNode       (abstract)
+      ├── BinOpNode  op, left, right
+      ├── VarNode    name
+      └── ConstNode  value
+
+  Three things to decide as you write them, because they're the ones that bite
+  later:
+
+  1. Node.__init__ takes line, col and every subclass passes them up. Not
+     optional, not defaulted — the walk in Task 3 has no tokens and errors come
+     from here. This is the single most important line in the file.
+  2. ConstNode.value is an int, not a string. Do int(token.text) in
+     parse_factor. The tree holds numbers, not text.
+  3. BinOpNode.op is the operator text ("+", "-", "*"), taken from tok.text.
+     Your lexer's kinds are plus/minus/star; the tree should carry what the
+     grammar's terminals say. This is what lets me delete the BINOPS translation
+     dict in Task 3.
+
+  Which position goes on which node — the handout is explicit: "the name for a
+  declaration or an assignment, the operator for an operation." So DeclNode gets
+  the name token's position, not i32's. Keep that in mind for the after-exit
+  error; see Step 3.
+
+  Do not write dump() or accept()/codegen() yet. Those are mine.
+
+  ---
+
+  Step 2 — Parser: peek, eat, expect, error
+
+  The four primitives, then one method per rule. The handout's skeleton (p.3–4)
+  is the shape; two additions it leaves implicit:
+
+  error(msg) needs to handle "no current token." This is the handout's
+  end-of-line rule (p.1): "When the error is that the line ended too early (x :=
+  x +), the position is the column right after the last token of that line."
+  Your practice-2 expect (compiler.py:22-24) reports the last token's own column
+  — that's now wrong by the width of that token.
+
+  So error branches: if peek() is a token, use its line, col; if it's None, use
+  the last token of the line at col + len(text). Which means you need the last
+  consumed token or self.toks[-1] available.
+
+  Watch the endline token. Your lexer appends one per line (lexer.py:77) and
+  practice-2 filtered them in parse (compiler.py:90). You have a choice, and it
+  interacts with the above:
+
+  - Filter them in Parser.__init__. Clean rules, but then "end of line" is
+    genuinely None and you compute the column from the last real token's col +
+    len(text).
+  - Keep them. peek() returning an endline is the end of statement, and its col
+    is already exactly the position the handout wants — the column right after
+    the last token. It solves the position problem for free.
+
+  I flagged this in the earlier review and you didn't pick. Recommendation:
+  filter them. The free column is tempting, but the last line of a file has no
+  endline (lexer.py:134 appends tokens without one when the file doesn't end in
+  a newline), so you'd need the fallback anyway — and then you have two paths
+  instead of one. Filter, and write the column arithmetic once in error.
+
+  Either way: make tokens output must not change, so filter in the Parser, never
+  in lex.
+
+  ---
+
+  Step 3 — the statement rules
+
+  parse_program, parse_statement, parse_decl, parse_assign, parse_exit, and a
+  Practice-2 parse_value/parse_operand that Step 4 will replace.
+
+  parse_program is the one with real decisions in it:
+
+  - One statement per line, blank lines skipped (no tokens after filtering).
+  - After a statement parses, the line must be empty — leftover token is
+    unexpected '2' after the statement at that token's position.
+  - Exactly one exit, last. Your ProgramNode has a separate exit field, so this
+    falls out: if you parse an exit and self.exit is already set, or if any line
+    follows one, that's the error. Check your tests/err_after_exit.expected
+    column before you write this — practice-2 blamed statements[i+1][1], the
+    name token of the following statement. DeclNode carries the name position
+    too, so it should match, but verify rather than assume; a wrong column
+    passes the suite silently.
+  - No exit at all → practice-2 blamed statements[-1][1] (compiler.py:111), the
+    last statement's name. Empty program → hardcoded 1:1 (compiler.py:104). Both
+    need a defensible position now; tests/err_no_exit.expected tells you what
+    it was.
+
+  The three error messages practice-2 already has — 'x' does not start a
+  statement, variable 'x' needs an initialiser in {}, extra tokens after… — keep
+  the wording where you can. Every .expected you don't have to regenerate is
+  one you don't have to hand-verify.
+
+  One rule from the handout that practice-2 got for free and you now must write
+  explicitly: exit takes an operand, never an expression (p.1, p.5). parse_exit
+  calls parse_operand/parse_factor, not parse_expr.
+
+  Checkpoint. Stop here and run the practice-2 programs through the parser. You
+  can't dump yet — that's my part — but you can print a node in a scratch script
+  or check it doesn't raise. Commit.
+
+  ---
+
+  Step 4 — Task 4: parse_expr, parse_term, parse_factor
+
+  The three-level grammar. Rewrite grammar.ebnf's value in this same commit —
+  expr ::= term { ("+"|"-") term }, term ::= factor { "*" factor }, factor ::=
+  number | ident — and repoint exit_stmt at factor.
+
+  The two trees the handout says to draw before coding (p.5) — 2 + 3 * 4 and 10
+  - 3 - 2. Draw them. They're the whole grading criterion for Task 4.
+
+  parse_factor is your old parse_operand, including the minus → negative numbers
+  are not supported check. Keep that: tests/err_negative_literal.expected
+  depends on it, and the handout's error list (p.5) wants "two operators in a
+  row" reported at the operator, which is the same code path.
+
+  Your lexer emits plus/minus/star as separate kinds, so the handout's tok.kind
+  == "op" and tok.text in "+-" becomes a check against your kinds. tok.text in
+  "+-" is a substring test on a string — it works here but it's the kind of
+  thing that silently accepts "". Prefer an explicit set of kinds.
+
+  Commit.
+
+  ---
+
+  Then hand back to me
+
+  - --ast argv plumbing in main()
+  - dump() on the node classes
+  - Task 3: CodeGen visitor, accept() on the nodes, deleting build()'s token
+    walk
+  - test files, .expected, .ast
+  - README, Makefile (IMAGE := lcd-practice3, an ast target)
+
+  ---
+
+  Two things I'd flag before you start
+
+  The .expected columns are the risk. Steps 2 and 3 change how positions are
+  computed in at least three places (end-of-line, after-exit, no-exit).
+  CLAUDE.md is explicit that a wrong column passes the suite silently and that
+  two bugs already hid that way. When you finish Step 3, the honest check is to
+  run the 12 err_* tests and look at every column that moved — not just whether
+  the suite is green.
+
+  ir.PointerType(I8) and builder.load(slot) (compiler.py:122, 141, 174) are
+  opaque-pointer-era calls that newer llvmlite deprecates. Not your problem this
+  week — the container pins a version and it passes — but if Task 3 throws a
+  load() missing argument at me, that's why, and I'll deal with it.
+
+  Ready when you are. Ping me after Step 4 and I'll take my half.
+
+✻ Cooked for 49s · done 12:02 AM
+
+※ recap: Practice 3 splits the compiler into a parser, an AST, and a tree-walking codegen. You're implementing the node classes and parse methods yourself; I gave you a 5-step plan. Next: commit grammar.ebnf, then write the node classes. (disable recaps in /config)
+
+❯ completed my part, now do yours
+
+⏺ Let me read what you wrote.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Good — parser and nodes are in, practice-2 code still sitting below as dead
+  weight for me to delete. Let me check the grammar and current test
+  expectations before writing.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ BSD cat. Let me redo that and note two expectation changes I can already see.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Two existing expectations will shift under your new parser — I'll confirm
+  rather than assume once the code runs:
+
+  - err_extra_tokens (exit x 3): old message was extra tokens after 'exit'; your
+    parse_program now reports unexpected '3' after the statement. Same
+    column 8.
+  - err_not_a_statement (mut x): old 'mut' does not start a statement — your
+    parse_statement still produces that. Fine.
+
+  Now my part. Starting with dump(), the --ast plumbing, and the CodeGen
+  visitor, deleting the practice-2 code as I go.
+
+⏺ Update(compiler.py)
+  ⎿  Removed 2 lines
+       7
+       8  I32, I8 = ir.IntType(32), ir.IntType(8)
+       9  FORMAT = b"Program exit with result %d\n\0"
+      10 -BINOPS = {"plus": "+", "minus": "-", "star": "*"}
+      10
+      12 -
+      11  ADD_OPS = {"plus": "+", "minus": "-"}
+      12  MUL_OPS = {"star": "*"}
+      13
+
+⏺ Now dump() on the nodes. The handout wants a method on the base class that
+  prints its own label and recurses.
+
+⏺ Update(compiler.py)
+  ⎿  Added 66 lines
+      25          self.line = line
+      26          self.col = col
+      27
+      28 +    def children(self):
+      29 +        return []
+      30
+      31 +    def dump(self, depth=0):
+      32 +        lines = ["  " * depth + self.label()]
+      33 +        for child in self.children():
+      34 +            lines.extend(child.dump(depth + 1))
+      35 +        return lines
+      36 +
+      37 +
+      38  class ProgramNode(Node):
+      39      def __init__(self, line, col, statements, exit):
+      40          super().__init__(line, col)
+      41          self.statements = statements
+      42          self.exit = exit
+      43
+      44 +    def label(self):
+      45 +        return "Program"
+      46
+      47 +    def children(self):
+      48 +        return self.statements + [self.exit]
+      49 +
+      50 +    def accept(self, visitor):
+      51 +        return visitor.visit_program(self)
+      52 +
+      53 +
+      54  class StmtNode(Node):
+      55      pass
+      56
+     ...
+       62          self.mutable = mutable
+       63          self.init = init
+       64
+       65 +    def label(self):
+       66 +        return f"Decl {self.name} {'mut' if self.mutable else
+          +'const'}"
+       67
+       68 +    def children(self):
+       69 +        return [self.init]
+       70 +
+       71 +    def accept(self, visitor):
+       72 +        return visitor.visit_decl(self)
+       73 +
+       74 +
+       75  class AssignNode(StmtNode):
+       76      def __init__(self, line, col, name, value):
+       77          super().__init__(line, col)
+       78          self.name = name
+       79          self.value = value
+       80
+       81 +    def label(self):
+       82 +        return f"Assign {self.name}"
+       83
+       84 +    def children(self):
+       85 +        return [self.value]
+       86 +
+       87 +    def accept(self, visitor):
+       88 +        return visitor.visit_assign(self)
+       89 +
+       90 +
+       91  class ExitNode(Node):
+       92      def __init__(self, line, col, value):
+       93          super().__init__(line, col)
+       94          self.value = value
+       95
+       96 +    def label(self):
+       97 +        return "Exit"
+       98
+       99 +    def children(self):
+      100 +        return [self.value]
+      101 +
+      102 +    def accept(self, visitor):
+      103 +        return visitor.visit_exit(self)
+      104 +
+      105 +
+      106  class ExprNode(Node):
+      107      pass
+      108
+     ...
+      114          self.left = left
+      115          self.right = right
+      116
+      117 +    def label(self):
+      118 +        return f"BinOp {self.op}"
+      119
+      120 +    def children(self):
+      121 +        return [self.left, self.right]
+      122 +
+      123 +    def accept(self, visitor):
+      124 +        return visitor.visit_binop(self)
+      125 +
+      126 +
+      127  class VarNode(ExprNode):
+      128      def __init__(self, line, col, name):
+      129          super().__init__(line, col)
+      130          self.name = name
+      131
+      132 +    def label(self):
+      133 +        return f"Var {self.name}"
+      134
+      135 +    def accept(self, visitor):
+      136 +        return visitor.visit_var(self)
+      137 +
+      138 +
+      139  class ConstNode(ExprNode):
+      140      def __init__(self, line, col, value):
+      141          super().__init__(line, col)
+      142          self.value = value
+      143
+      144 +    def label(self):
+      145 +        return f"Const {self.value}"
+      146
+      147 +    def accept(self, visitor):
+      148 +        return visitor.visit_const(self)
+      149 +
+      150 +
+      151  class Parser:
+      152      def __init__(self, lines):
+      153          self.lines = [[t for t in toks if t.kind != "endline"]
+            for toks in lines]
+
+⏺ Now replace everything below the Parser — the practice-2 functions and build()
+  — with the CodeGen visitor.
+
+  Searched for 1 pattern (ctrl+o to expand)
+⏺ Replacing lines 266–424 (everything from the old expect through build) with
+  the visitor.
+
+⏺ Bash(python3 - <<'PY'
+      import io…)
+  ⎿  15:class Var:
+     23:class Node:
+     38:class ProgramNode(Node):
+     … +12 lines (ctrl+o to expand)
+  ⎿  Updated compiler.py (+71 -154)
+      263          return ProgramNode(1, 1, statements, exit_node)
+      264
+      265
+      266 -def expect(tokens, i, kind, what):
+      267 -    if i >= len(tokens):
+      268 -        end = tokens[-1]
+      269 -        raise CompileError(end.line, end.col, f"expected {what
+          -}")
+      270 -    if tokens[i].kind != kind:
+      271 -        raise CompileError(tokens[i].line, tokens[i].col, f"ex
+          -pected {what}")
+      272 -    return tokens[i]
+      273 -
+      274 -
+      275 -def parse_operand(tokens, i):
+      276 -    token = tokens[i]
+      277 -    if token.kind == "minus":
+      278 -        raise CompileError(token.line, token.col, "negative nu
+          -mbers are not supported")
+      279 -    if token.kind == "number":
+      280 -        return ("const", int(token.text), token), i + 1
+      281 -    if token.kind == "ident":
+      282 -        return ("var", token.text, token), i + 1
+      283 -    raise CompileError(token.line, token.col, "expected a cons
+          -tant or a variable")
+      284 -
+      285 -
+      286 -def parse_expr(tokens, i, end):
+      287 -    left, i = parse_operand(tokens, i)
+      288 -    if i == end:
+      289 -        return ("value", left), i
+      290 -    if tokens[i].kind not in BINOPS:
+      291 -        raise CompileError(tokens[i].line, tokens[i].col, "exp
+          -ected an operator")
+      292 -    op = BINOPS[tokens[i].kind]
+      293 -    right, i = parse_operand(tokens, i + 1)
+      294 -    if i != end:
+      295 -        raise CompileError(tokens[i].line, tokens[i].col, "ext
+          -ra tokens after the expression")
+      296 -    return ("binop", left, op, right), i
+      297 -
+      298 -
+      299 -def parse_decl(tokens):
+      300 -    i = 1
+      301 -    is_mut = tokens[i].kind == "kw_mut"
+      302 -    if is_mut:
+     … 194 more lines (ctrl+o to expand)
+
+⏺ Now main() with the --ast flag.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ The handout's --ast form takes one argument and writes nothing.
+
+⏺ Update(compiler.py)
+  ⎿  Added 16 lines, removed 6 lines
+      340
+      341
+      342  def main(argv):
+      343 -    if len(argv) != 3:
+      344 -        print(f"usage: {argv[0]} <input> <output.ll>", file=sy
+          -s.stderr)
+      343 +    ast_only = len(argv) > 1 and argv[1] == "--ast"
+      344 +    args = argv[2:] if ast_only else argv[1:]
+      345 +    if len(args) != (1 if ast_only else 2):
+      346 +        print(
+      347 +            f"usage: {argv[0]} <input> <output.ll>\n"
+      348 +            f"       {argv[0]} --ast <input>",
+      349 +            file=sys.stderr,
+      350 +        )
+      351          return 2
+      352
+      353      try:
+      348 -        with open(argv[1], "rb") as f:
+      354 +        with open(args[0], "rb") as f:
+      355              source = f.read()
+      356      except OSError as exc:
+      351 -        print(f"cannot read {argv[1]}: {exc}", file=sys.stderr
+          -)
+      357 +        print(f"cannot read {args[0]}: {exc}", file=sys.stderr
+          +)
+      358          return 2
+      359
+      360      try:
+      355 -        module = build(parse(lex(source)))
+      361 +        program = Parser(lex(source)).parse_program()
+      362 +        if ast_only:
+      363 +            print("\n".join(program.dump()))
+      364 +            return 0
+      365 +        module = program.accept(CodeGen())
+      366      except CompileError as exc:
+      367          print(f"compilation error: line {exc.line}:{exc.col}:
+           {exc.message}", file=sys.stderr)
+      368          return 1
+      369
+      360 -    with open(argv[2], "w") as f:
+      370 +    with open(args[1], "w") as f:
+      371          f.write(str(module))
+      372      return 0
+      373
+
+⏺ Now the container. Renaming IMAGE to lcd-practice3 and adding an ast target.
+
+⏺ Bash(python3 - <<'PY'
+      p='Makefile'; s=open(p).read()…)
+  ⎿  IMAGE := lcd-practice3
+     DOCKER := docker run --rm -it -v "$(CURDIR)":/work -w /work $(IMAGE)
+     … +32 lines (ctrl+o to expand)
+  ⎿  Updated Makefile (+5 -2)
+      1 -IMAGE := lcd-practice2
+      1 +IMAGE := lcd-practice3
+      2  DOCKER := docker run --rm -it -v "$(CURDIR)":/work -w /work $(IM
+         AGE)
+      3
+      4 -.PHONY: image shell tokens run build tests clean
+      4 +.PHONY: image shell tokens ast run build tests clean
+      5
+      6  image:
+      7          docker build -t $(IMAGE) .
+     ...
+      12  tokens:
+      13          $(DOCKER) python3 lexer.py lexer_demo.txt
+      14
+      15 +ast:
+      16 +        $(DOCKER) python3 compiler.py --ast input.txt
+      17 +
+      18  run:
+      19          $(DOCKER) bash -c 'python3 compiler.py input.txt output
+          .ll && lli output.ll'
+      20
+
+⏺ Image built. Let me check the AST dump against the handout's reference output
+  for input.txt (the practice-2 worked program).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Byte-for-byte identical to the handout's reference dump on p.3. Now the Task 4
+  precedence trees and the full test suite.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Both trees match the handout's drawings on p.5 exactly — 2 + 3 * 4 groups the
+  * under the +, and 10 - 3 - 2 nests left. Now the existing suite, to see what
+  regressed.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Exactly the one shift I predicted, and the column (2:8) is unchanged — only
+  the wording. ok_worked still prints 70, so Task 3 preserved the IR. Updating
+  that expectation, since the new message is the handout's own wording (p.3).
+
+⏺ Bash(echo "compilation error: line 2:8: unexpected '3' after the statement" >
+      tests/err_extra_tokens.expected && cat tests/err_extra_tokens.expected)
+  ⎿  compilation error: line 2:8: unexpected '3' after the statement
+  ⎿  Updated tests/err_extra_tokens.expected (+1 -1)
+      1 -compilation error: line 2:8: extra tokens after 'exit'
+      1 +compilation error: line 2:8: unexpected '3' after the statement
+
+⏺ Now the Task 4 tests. The handout names specific cases to cover (p.6): 2+3*4,
+  * in the middle of a chain, left-associative -, an expression right of :=, and
+  the four new parser errors.
+
+⏺ Bash(cd /Users/vladyslav.prudius/Documents/kse-lang-compilers/kse-lang-compile
+      rs-project/tests && \
+      printf 'i32 x{2 + 3 * 4}\nexit x\n' > ok_precedence.txt && \…)
+  ⎿  31
+  ⎿  Created tests/err_after_statement.txt (+2 -0)
+      1 +i32 x{1 + 2} 5
+      2 +exit x
+  ⎿  Created tests/err_exit_expr.txt (+2 -0)
+      1 +i32 x{1}
+      2 +exit x + 1
+  ⎿  Created tests/err_no_assign_op.txt (+3 -0)
+      1 +i32 x{2}
+      2 +x 5
+      3 +exit x
+  ⎿  Created tests/err_op_after_brace.txt (+2 -0)
+      1 +i32 x{* 2}
+      2 +exit x
+  ⎿  Created tests/err_op_at_eol.txt (+3 -0)
+      1 +i32 mut x{1}
+      2 +x := x +
+      3 +exit x
+  ⎿  … 7 more files changed
+
+⏺ Now generating .expected from the compiler's own output, then hand-verifying
+  every column as CLAUDE.md requires.
+
+⏺ Bash(cd /Users/vladyslav.prudius/Documents/kse-lang-compilers/kse-lang-compile
+      rs-project && for n in ok_precedence ok_chain_middle ok_left_assoc
+      ok_assign_expr ok_ta…)
+  ⎿  ok_precedence      Program exit with result 14
+     ok_chain_middle    Program exit with result 11
+     ok_left_assoc      Program exit with result 5
+     … +2 lines (ctrl+o to expand)
+  ⎿  Created tests/ok_assign_expr.expected (+1 -0)
+      1 +Program exit with result 29
+  ⎿  Created tests/ok_chain_middle.expected (+1 -0)
+      1 +Program exit with result 11
+  ⎿  Created tests/ok_left_assoc.expected (+1 -0)
+      1 +Program exit with result 5
+  ⎿  Created tests/ok_precedence.expected (+1 -0)
+      1 +Program exit with result 14
+  ⎿  Created tests/ok_task4.expected (+1 -0)
+      1 +Program exit with result 120
+
+⏺ Checking each against hand arithmetic: 2+3*4=14 ✓, 1+2*3+4=11 ✓, 10-3-2=5 ✓
+  (not 9), 10*2-1+10=29 ✓, and ok_task4 = 120 ✓ — the exact figure the handout's
+  submission section demands. Now the error expectations.
+
+⏺ Bash(for n in err_two_ops err_op_at_eol err_op_after_brace err_after_statement
+      err_no_assign_op err_use_in_expr err_exit_expr; do
+        docker run --rm -v "$PWD":/work -…)
+  ⎿  --- err_two_ops
+              1 i32 x{1 + * 2}
+              2 exit x
+     … +28 lines (ctrl+o to expand)
+  ⎿  Created tests/err_after_statement.expected (+1 -0)
+      1 +compilation error: line 1:14: unexpected '5' after the statement
+  ⎿  Created tests/err_exit_expr.expected (+1 -0)
+      1 +compilation error: line 2:8: unexpected '+' after the statement
+  ⎿  Created tests/err_no_assign_op.expected (+1 -0)
+      1 +compilation error: line 2:3: expected ':=' after 'x', got '5'
+  ⎿  Created tests/err_op_after_brace.expected (+1 -0)
+      1 +compilation error: line 1:7: expected a constant or a variable,
+        +got '*'
+  ⎿  Created tests/err_op_at_eol.expected (+1 -0)
+      1 +compilation error: line 2:9: expected a constant or a variable,
+        +found end of line
+  ⎿  … 2 more files changed
+
+⏺ Hand-verifying each column against the source, counting bytes 1-based:
+
+  ┌─────────────────────┬──────────┬─────────┬──────────────────────────────┐
+  │        test         │ source   │ claimed │            check             │
+  │                     │   line   │         │                              │
+  ├─────────────────────┼──────────┼─────────┼──────────────────────────────┤
+  │ err_two_ops         │ i32 x{1  │ 1:11    │ i32 x{1 +  = 10 bytes, * is  │
+  │                     │ + * 2}   │         │ 11th ✓                       │
+  ├─────────────────────┼──────────┼─────────┼──────────────────────────────┤
+  │ err_op_at_eol       │ x := x + │ 2:9     │ line is 8 bytes, col 9 =     │
+  │                     │          │         │ right after last token ✓     │
+  ├─────────────────────┼──────────┼─────────┼──────────────────────────────┤
+  │ err_op_after_brace  │ i32 x{*  │ 1:7     │ i32 x{ = 6, * is 7th ✓       │
+  │                     │ 2}       │         │                              │
+  ├─────────────────────┼──────────┼─────────┼──────────────────────────────┤
+  │ err_after_statement │ i32 x{1  │ 1:14    │ i32 x{1 + 2}  = 13, 5 is     │
+  │                     │ + 2} 5   │         │ 14th ✓                       │
+  ├─────────────────────┼──────────┼─────────┼──────────────────────────────┤
+  │ err_no_assign_op    │ x 5      │ 2:3     │ x  = 2, 5 is 3rd ✓           │
+  ├─────────────────────┼──────────┼─────────┼──────────────────────────────┤
+  │                     │          │         │ y is 7th ✓ — matches the     │
+  │ err_use_in_expr     │ i32 x{y  │ 1:7     │ handout's own stated line    │
+  │                     │ + 1 * 2} │         │ 1:7 for this exact case      │
+  │                     │          │         │ (p.5)                        │
+  ├─────────────────────┼──────────┼─────────┼──────────────────────────────┤
+  │ err_exit_expr       │ exit x + │ 2:8     │ exit x  = 7, + is 8th ✓      │
+  │                     │  1       │         │                              │
+  └─────────────────────┴──────────┴─────────┴──────────────────────────────┘
+
+  Three of these match wordings the handout prints verbatim (err_two_ops
+  "expected a constant or a variable, got '*'", err_op_at_eol "found end of
+  line", err_use_in_expr at 1:7). Full suite:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 31 passed. Now the .ast files the handout says are welcome, plus a runner
+  extension to actually check them — an unchecked .ast file is decoration.
+
+⏺ Bash(for n in ok_precedence ok_left_assoc ok_task4 ok_worked; do
+        docker run --rm -v "$PWD":/work -w /work lcd-practice3 python3
+      compiler.py --ast tests/$n.txt > te…)
+  ⎿  === ok_precedence.ast ===
+     Program
+       Decl x const
+     … +17 lines (ctrl+o to expand)
+  ⎿  Created tests/ok_left_assoc.ast (+9 -0)
+      1 +Program
+      2 +  Decl x const
+      3 +    BinOp -
+      4 +      BinOp -
+      5 +        Const 10
+      6 +        Const 3
+      7 +      Const 2
+      8 +  Exit
+      9 +    Var x
+  ⎿  Created tests/ok_precedence.ast (+9 -0)
+      1 +Program
+      2 +  Decl x const
+      3 +    BinOp +
+      4 +      Const 2
+      5 +      BinOp *
+      6 +        Const 3
+      7 +        Const 4
+      8 +  Exit
+      9 +    Var x
+  ⎿  Created tests/ok_task4.ast (+27 -0)
+       1 +Program
+       2 +  Decl x const
+       3 +    BinOp +
+       4 +      Const 2
+       5 +      BinOp *
+       6 +        Const 3
+       7 +        Const 4
+       8 +  Decl a mut
+       9 +    BinOp -
+      10 +      BinOp -
+      11 +        Const 10
+      12 +        Const 3
+      13 +      Const 2
+      14 +  Assign a
+      15 +    BinOp -
+      16 +      BinOp *
+      17 +        Var a
+      18 +        Const 2
+      19 +      Const 1
+      20 +  Decl z const
+      21 +    BinOp -
+      22 +      BinOp *
+      23 +        Var x
+      24 +        Var a
+      25 +      Const 6
+      26 +  Exit
+      27 +    Var z
+  ⎿  Created tests/ok_worked.ast (+19 -0)
+       1 +Program
+       2 +  Decl x const
+       3 +    Const 0
+       4 +  Decl y mut
+       5 +    Const 10
+       6 +  Decl z const
+       7 +    BinOp +
+       8 +      Const 2
+       9 +      Const 5
+      10 +  Decl t mut
+      11 +    BinOp +
+      12 +      Var x
+      13 +      Const 10
+      14 +  Assign t
+      15 +    BinOp *
+      16 +      Var t
+      17 +      Var z
+      18 +  Exit
+      19 +    Var t
+
+⏺ Both match the handout's hand-drawn trees. Wiring .ast checking into the
+  runner:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(run_tests.sh)
+  ⎿  Added 5 lines
+      24              sed 's/^/      /' "$TMP/err"
+      25              fail=$((fail + 1)); continue
+      26          fi
+      27 +        if [[ -e tests/$name.ast ]] && ! python3 compiler.py --
+         +ast "$src" | diff -q - "tests/$name.ast" >/dev/null; then
+      28 +            echo "FAIL $name: --ast does not match tests/$name.
+         +ast"
+      29 +            python3 compiler.py --ast "$src" | diff - "tests/$n
+         +ame.ast" | sed 's/^/      /'
+      30 +            fail=$((fail + 1)); continue
+      31 +        fi
+      32      else
+      33          if python3 compiler.py "$src" "$ll" 2>"$TMP/err"; then
+      34              echo "FAIL $name: expected a compilation error"
+
+⏺ The runner globs tests/*.txt, so the new .ast files won't be mistaken for
+  tests. Let me verify, and also confirm --ast writes no file and the error
+  paths still write nothing.
+
+  Ran 1 shell command (ctrl+o to expand)
+⏺ All exit codes correct, --ast writes nothing, errors still exit 1. Now make
+  build — the path the handout asks to be demonstrated — on the Task 4 program.
+
+⏺ Bash(cp tests/ok_task4.txt input.txt && docker run --rm -v "$PWD":/work -w
+      /work lcd-practice3 bash -c '
+      python3 compiler.py input.txt output.ll &&…)
+  ⎿  Program exit with result 120
+     --- IR ---
+     ; ModuleID = "practice3"
+     … +19 lines (ctrl+o to expand)
+  ⎿  Updated input.txt (+5 -6)
+      1 -i32 x{0}
+      2 -i32 mut y{10}
+      3 -i32 z{2+5}
+      4 -i32 mut t { x + 10 }
+      5 -t := t * z
+      6 -exit t
+      1 +i32 x{2 + 3 * 4}
+      2 +i32 mut a{10 - 3 - 2}
+      3 +a := a * 2 - 1
+      4 +i32 z{x * a - 6}
+      5 +exit z
+
+⏺ Program exit with result 120 through llc + clang, exactly as the submission
+  section requires. The IR shows precedence resolved correctly — mul 3,4 before
+  add 2, and sub nesting left.
+
+  I made a judgment call there: input.txt now holds the Task 4 program instead
+  of the practice-2 one, so make run/make build/make ast demonstrate this week's
+  work. Cleaning up build artifacts and updating the README.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 12 ok, 19 err. Now the README — rewriting for practice 3.
+
+⏺ Write(README.md)
+  ⎿  Added 58 lines, removed 23 lines
+       1 -# Practice 2 — a lexer as a state machine
+       1 +# Practice 3 — a parser and an abstract syntax tree
+       2
+       3  A compiler for a small language of 32-bit integers. `lexer.py`
+          turns source bytes
+       4 -into typed tokens; `compiler.py` reads only those tokens and em
+         -its LLVM IR through
+       5 -the `llvmlite.ir` builder.
+       4 +into typed tokens; `Parser` in `compiler.py` reads those tokens
+         + and builds a tree;
+       5 +`CodeGen` walks the tree and emits LLVM IR through the `llvmlit
+         +e.ir` builder.
+       6 +`grammar.ebnf` is the grammar the parser implements, one method
+         + per rule.
+       7
+       8  ## Running
+       9
+      10  ```sh
+      10 -python3 compiler.py input.txt output.ll
+      11 -lli output.ll
+      11 +python3 compiler.py input.txt output.ll   # compile
+      12 +python3 compiler.py --ast input.txt       # print the tree, wri
+         +te nothing
+      13 +lli output.ll                             # run
+      14  ```
+      15
+      16  Or through the full toolchain:
+     ...
+      30  written to the output file:
+      31
+      32  ```
+      31 -compilation error: line 2:8: unexpected byte '$'
+      33 +compilation error: line 1:11: expected a constant or a variable
+         +, got '*'
+      34  ```
+      35
+      34 -## Tests
+      36 +When a line ends too early the column is the one right after it
+         +s last token —
+      37 +`x := x +` reports `2:9`, the place where something should have
+         + been typed.
+      38
+      36 -```sh
+      37 -./run_tests.sh
+      39 +## The phases
+      40 +
+      41  ```
+      42 +lex      bytes  -> one token vector per line        lexer.py
+      43 +parse    tokens -> a tree of Node subclasses        Parser
+      44 +walk     tree   -> LLVM IR                          CodeGen
+      45 +```
+      46
+      40 -Each `tests/NAME.txt` is paired with `tests/NAME.expected`. An
+         -`ok_` program is
+      41 -compiled, assembled, linked and run, and its stdout is compared
+         -; an `err_` program
+      42 -must fail with the expected message and leave no output file.
+      47 +The parser is recursive descent, written by hand: `peek`, `eat`
+         +, `expect`, and
+      48 +one method per grammar rule. One token of look-ahead decides ev
+         +ery choice. The
+      49 +tree holds names, numbers, flags and child nodes — never a toke
+         +n — so every node
+      50 +carries the `line, col` of the token it came from, and the walk
+         + reports its
+      51 +errors from there.
+      52
+      44 -Everything needed is in the `Dockerfile`:
+      53 +Precedence and associativity come out of the grammar rather tha
+         +n a table:
+      54 +`parse_expr` calls `parse_term` before it looks for `+`, so eve
+         +rything a `*`
+      55 +glues together is already one node; the loop builds each new `B
+         +inOpNode` with
+      56 +what it has so far as the left child, which is left associativi
+         +ty.
+      57
+      46 -```sh
+      47 -docker build -t kse-lcd .
+      48 -docker run --rm -v "$PWD:/work" kse-lcd ./run_tests.sh
+      58  ```
+      59 +i32 x{2 + 3 * 4}        14, not 20
+      60 +i32 mut a{10 - 3 - 2}   5, not 9
+      61 +```
+      62
+      63 +The three semantic checks — declared before use, declared once,
+         + `mut` before
+      64 +`:=` — stay in the walk, where the symbol table is.
+      65 +
+      66  ## The language
+      67
+      68  One statement per line.
+     ...
+      70  ```
+      71  i32 x{0}            declaration, const, initialiser mandatory
+      72  i32 mut y{10}       declaration, mutable
+      58 -i32 z{2+5}          initialiser: a constant, a variable, or one
+         - +, - or * on two of them
+      59 -y := x + 3          assignment; only a mut variable may be assi
+         -gned
+      73 +i32 z{2 + 3 * y}    initialiser: any chain of +, - and * over c
+         +onstants and variables
+      74 +y := x * 2 - 1      assignment; only a mut variable may be assi
+         +gned
+      75  exit y              prints "Program exit with result <value>";
+          the last line
+      76  ```
+      77
+      63 -A variable is declared once, before its first use. `i32`, `mut`
+         - and `exit` are
+      64 -reserved. Blank lines and extra spacing are ignored.
+      78 +`exit` takes a constant or a variable, never an operation. A va
+         +riable is declared
+      79 +once, before its first use. `i32`, `mut` and `exit` are reserve
+         +d. Blank lines and
+      80 +extra spacing are ignored. There are no parentheses.
+      81
+      82  ## Two deliberate decisions
+      83
+      84  **Self-reference in an initialiser.** `i32 x{x}` is rejected wi
+          th
+      85  `variable 'x' is used before its declaration`. The name is ente
+          red into the symbol
+      70 -table only *after* its initialiser has been evaluated, so a var
+         -iable can never be
+      86 +table only *after* its initialiser has been walked, so a variab
+         +le can never be
+      87  read from its own initialiser — the error falls out of the decl
+          aration-before-use
+      88  rule instead of needing a check of its own. Otherwise the load
+          would read an
+      89  uninitialised `alloca` and silently produce garbage. See `tests
+          /err_self_init.txt`.
+     ...
+      101
+      102  See `tests/ok_negative.txt`.
+      103
+      104 +## Tests
+      105 +
+      106 +```sh
+      107 +./run_tests.sh
+      108 +```
+      109 +
+      110 +Each `tests/NAME.txt` is paired with `tests/NAME.expected`. An
+          + `ok_` program is
+      111 +compiled, assembled, linked and run, and its stdout is compare
+          +d; an `err_` program
+      112 +must fail with the expected message and leave no output file.
+          +Where a
+      113 +`tests/NAME.ast` exists, the `--ast` dump is compared against
+          +it too.
+      114 +
+      115 +Everything needed is in the `Dockerfile`:
+      116 +
+      117 +```sh
+      118 +docker build -t lcd-practice3 .
+      119 +docker run --rm -v "$PWD:/work" lcd-practice3 ./run_tests.sh
+      120 +```
+      121 +
+      122  ## Layout
+      123
+      124  ```
+      125  lexer.py        byte-by-byte state machine: START, IDENT, NUMB
+           ER, COLON
+       92 -compiler.py     statement recognition over tokens, semantic ch
+          -ecks, IR via llvmlite.ir
+       93 -tests/          7 programs that run, 12 that must fail
+      126 +grammar.ebnf    the grammar, one rule per parse method
+      127 +compiler.py     the AST classes, the parser, the codegen walk
+      128 +tests/          12 programs that run, 19 that must fail, 4 wit
+          +h expected trees
+      129  run_tests.sh    compiles, links and runs each test, compares a
+           gainst .expected
+      130  Dockerfile      ubuntu:24.04 with llvm, clang and llvmlite
+      131  ```
+
+⏺ One inaccuracy in your grammar comment I should fix — it says the line loop
+  "consumes the endline token", but your Parser.__init__ filters them out.
+
+⏺ Update(grammar.ebnf)
+  ⎿  Added 6 lines, removed 2 lines
+      19  factor     ::= number | ident
+      20
+      21
+      22 -(* One statement per line. The lexer gives one token vector per
+         - line, so the
+      23 -   line loop consumes the endline token and no rule here mentio
+         -ns it. *)
+      22 +(* Line structure is lexical: the lexer gives one token vector
+         +per line, the
+      23 +   parser drops the endline tokens, and a line with no tokens i
+         +s skipped. So
+      24 +   one statement per line and blank lines cost no rule here.
+      25
+      26 +   program is what rejects a statement after exit and a program
+         + without one:
+      27 +   exit_stmt sits outside the repetition, so it is required and
+         + it is last. *)
+      28 +
+      29  (* Left out on purpose, checked in the walk: declared before us
+          e, declared
+      30     once, mut before :=. *)
+
+⏺ Final verification of the whole thing from a clean state:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The grammar header still says "Practice 2" though it now has the Task 4 rules.
+
+⏺ Update(grammar.ebnf)
+  ⎿  Added 1 line, removed 1 line
+      1 -(* The Practice 2 language in EBNF.
+      1 +(* The language in EBNF, with the Practice 3 expression rules.
+      2     Quoted words are terminals: tokens the lexer emits, with the
+         same text.
+      3     ident and number are terminals too; how they are spelled is l
+         exer.py's rule. *)
+      4
+
+⏺ Done. Everything verified in the container.
+
+  What I did
+
+  Task 3 — codegen off tokens onto the tree. Deleted the practice-2 functions
+  and build() (159 lines), replaced with a CodeGen visitor:
+  visit_program/decl/assign/exit/binop/var/const, plus accept() on each node
+  class. builder, symbols, printf, fmt are now fields instead of closure
+  captures. visit_binop recurses into children, so chains of any depth work. The
+  three semantic checks moved over unchanged; a lookup helper folds the two
+  "used before its declaration" sites together. Deleted the now-dead BINOPS dict
+  — your nodes carry the operator text directly.
+
+  dump() as label() + children() on Node, recursing with two-space indent. The
+  dump for input.txt is byte-identical to the handout's reference tree on p.3,
+  and the 2+3*4 / 10-3-2 trees match its hand-drawn ones on p.5.
+
+  --ast plumbing, writing nothing and exiting 0; bad arg counts exit 2, compile
+  errors exit 1.
+
+  Tests: 19 → 31. Added 5 ok (precedence, chain_middle, left_assoc, assign_expr,
+  task4) and 7 err (two_ops, op_at_eol, op_after_brace, after_statement,
+  no_assign_op, use_in_expr, exit_expr), covering every case the handout names
+  on p.6. Generated each .expected from the compiler, then hand-checked all
+  seven columns byte-by-byte against the source — three match wordings and
+  positions the handout prints verbatim. Added .ast files for four programs and
+  taught run_tests.sh to diff them, since an unchecked .ast is decoration.
+
+  Makefile lcd-practice3 + an ast target; README rewritten; fixed the
+  grammar.ebnf header ("Practice 2" → the Task 4 rules are in it now) and the
+  endline comment, which described consuming tokens your parser actually
+  filters.
+
+  Two things to know
+
+  One expectation changed, deliberately. err_extra_tokens (exit x 3) said extra
+  tokens after 'exit'; your parse_program now says unexpected '3' after the
+  statement — the handout's own wording on p.3. Column 8 is unchanged. That's
+  the only regression in the suite, and it's the right one.
+
+  I overwrote input.txt with the Task 4 program (was the practice-2 one), so
+  make run/build/ast demonstrate this week. make build prints Program exit with
+  result 120 through llc + clang. Say the word if you'd rather it stayed.
+
+  Not committed — your working tree, your call on the message. The natural split
+  is Task 3 + --ast in one commit, tests + docs in another.
+
+✻ Cooked for 5m 36s · done 12:11 AM
+
+※ recap: Practice 3 is done: parser, AST dump, tree-walking codegen, 31 passing tests, README and Makefile updated. Nothing is committed yet, so the next step is committing the work on the practice-3 branch. (disable recaps in /config)
 </session>
 
 

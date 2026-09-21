@@ -7,7 +7,9 @@ from lexer import CompileError, lex
 
 I32, I8 = ir.IntType(32), ir.IntType(8)
 FORMAT = b"Program exit with result %d\n\0"
-BINOPS = {"plus": "+", "minus": "-", "star": "*"}
+
+ADD_OPS = {"plus": "+", "minus": "-"}
+MUL_OPS = {"star": "*"}
 
 
 class Var:
@@ -18,184 +20,354 @@ class Var:
         self.col = col
 
 
-def expect(tokens, i, kind, what):
-    if i >= len(tokens):
-        end = tokens[-1]
-        raise CompileError(end.line, end.col, f"expected {what}")
-    if tokens[i].kind != kind:
-        raise CompileError(tokens[i].line, tokens[i].col, f"expected {what}")
-    return tokens[i]
+class Node:
+    def __init__(self, line, col):
+        self.line = line
+        self.col = col
+
+    def children(self):
+        return []
+
+    def dump(self, depth=0):
+        lines = ["  " * depth + self.label()]
+        for child in self.children():
+            lines.extend(child.dump(depth + 1))
+        return lines
 
 
-def parse_operand(tokens, i):
-    token = tokens[i]
-    if token.kind == "minus":
-        raise CompileError(token.line, token.col, "negative numbers are not supported")
-    if token.kind == "number":
-        return ("const", int(token.text), token), i + 1
-    if token.kind == "ident":
-        return ("var", token.text, token), i + 1
-    raise CompileError(token.line, token.col, "expected a constant or a variable")
+class ProgramNode(Node):
+    def __init__(self, line, col, statements, exit):
+        super().__init__(line, col)
+        self.statements = statements
+        self.exit = exit
+
+    def label(self):
+        return "Program"
+
+    def children(self):
+        return self.statements + [self.exit]
+
+    def accept(self, visitor):
+        return visitor.visit_program(self)
 
 
-def parse_expr(tokens, i, end):
-    left, i = parse_operand(tokens, i)
-    if i == end:
-        return ("value", left), i
-    if tokens[i].kind not in BINOPS:
-        raise CompileError(tokens[i].line, tokens[i].col, "expected an operator")
-    op = BINOPS[tokens[i].kind]
-    right, i = parse_operand(tokens, i + 1)
-    if i != end:
-        raise CompileError(tokens[i].line, tokens[i].col, "extra tokens after the expression")
-    return ("binop", left, op, right), i
+class StmtNode(Node):
+    pass
 
 
-def parse_decl(tokens):
-    i = 1
-    is_mut = tokens[i].kind == "kw_mut"
-    if is_mut:
-        i += 1
-    name = expect(tokens, i, "ident", "a variable name")
-    i += 1
-    if i >= len(tokens) or tokens[i].kind != "lbrace":
-        raise CompileError(name.line, name.col, f"variable '{name.text}' needs an initialiser in {{}}")
-    open_brace = tokens[i]
-    close = next(j for j in range(i + 1, len(tokens)) if tokens[j].kind == "rbrace")
-    if close == i + 1:
-        raise CompileError(open_brace.line, open_brace.col, "the initialiser is empty")
-    expr, _ = parse_expr(tokens, i + 1, close)
-    if close + 1 != len(tokens):
-        extra = tokens[close + 1]
-        raise CompileError(extra.line, extra.col, "extra tokens after the declaration")
-    return ("decl", name, is_mut, expr)
+class DeclNode(StmtNode):
+    def __init__(self, line, col, name, mutable, init):
+        super().__init__(line, col)
+        self.name = name
+        self.mutable = mutable
+        self.init = init
+
+    def label(self):
+        return f"Decl {self.name} {'mut' if self.mutable else 'const'}"
+
+    def children(self):
+        return [self.init]
+
+    def accept(self, visitor):
+        return visitor.visit_decl(self)
 
 
-def parse_assign(tokens):
-    name = tokens[0]
-    expr, _ = parse_expr(tokens, 2, len(tokens))
-    return ("assign", name, expr)
+class AssignNode(StmtNode):
+    def __init__(self, line, col, name, value):
+        super().__init__(line, col)
+        self.name = name
+        self.value = value
+
+    def label(self):
+        return f"Assign {self.name}"
+
+    def children(self):
+        return [self.value]
+
+    def accept(self, visitor):
+        return visitor.visit_assign(self)
 
 
-def parse_exit(tokens):
-    operand, i = parse_operand(tokens, 1)
-    if i != len(tokens):
-        raise CompileError(tokens[i].line, tokens[i].col, "extra tokens after 'exit'")
-    return ("exit", tokens[0], operand)
+class ExitNode(Node):
+    def __init__(self, line, col, value):
+        super().__init__(line, col)
+        self.value = value
+
+    def label(self):
+        return "Exit"
+
+    def children(self):
+        return [self.value]
+
+    def accept(self, visitor):
+        return visitor.visit_exit(self)
 
 
-def parse(lines):
-    statements = []
-    for tokens in lines:
-        tokens = [t for t in tokens if t.kind != "endline"]
-        if not tokens:
-            continue
-        head = tokens[0]
-        if head.kind == "kw_i32":
-            statements.append(parse_decl(tokens))
-        elif head.kind == "kw_exit":
-            statements.append(parse_exit(tokens))
-        elif head.kind == "ident" and len(tokens) > 1 and tokens[1].kind == "assign":
-            statements.append(parse_assign(tokens))
-        else:
-            raise CompileError(head.line, head.col, f"'{head.text}' does not start a statement")
-
-    if not statements:
-        raise CompileError(1, 1, "the program is empty: it must end with 'exit'")
-    for i, statement in enumerate(statements[:-1]):
-        if statement[0] == "exit":
-            token = statements[i + 1][1]
-            raise CompileError(token.line, token.col, "'exit' must be the last statement")
-    if statements[-1][0] != "exit":
-        last = statements[-1][1]
-        raise CompileError(last.line, last.col, "the program must end with 'exit'")
-    return statements
+class ExprNode(Node):
+    pass
 
 
-def build(statements):
-    module = ir.Module(name="practice2")
-    module.triple = llvm.get_default_triple()
+class BinOpNode(ExprNode):
+    def __init__(self, line, col, op, left, right):
+        super().__init__(line, col)
+        self.op = op
+        self.left = left
+        self.right = right
 
-    main = ir.Function(module, ir.FunctionType(I32, []), name="main")
-    builder = ir.IRBuilder(main.append_basic_block("entry"))
-    printf = ir.Function(
-        module, ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True), name="printf"
-    )
+    def label(self):
+        return f"BinOp {self.op}"
 
-    fmt_type = ir.ArrayType(I8, len(FORMAT))
-    fmt = ir.GlobalVariable(module, fmt_type, name="fmt")
-    fmt.linkage, fmt.global_constant = "private", True
-    fmt.initializer = ir.Constant(fmt_type, bytearray(FORMAT))
+    def children(self):
+        return [self.left, self.right]
 
-    symbols = {}
-    emit = {"+": builder.add, "-": builder.sub, "*": builder.mul}
+    def accept(self, visitor):
+        return visitor.visit_binop(self)
 
-    def load(operand):
-        kind, payload, token = operand
-        if kind == "const":
-            return ir.Constant(I32, payload)
-        if payload not in symbols:
+
+class VarNode(ExprNode):
+    def __init__(self, line, col, name):
+        super().__init__(line, col)
+        self.name = name
+
+    def label(self):
+        return f"Var {self.name}"
+
+    def accept(self, visitor):
+        return visitor.visit_var(self)
+
+
+class ConstNode(ExprNode):
+    def __init__(self, line, col, value):
+        super().__init__(line, col)
+        self.value = value
+
+    def label(self):
+        return f"Const {self.value}"
+
+    def accept(self, visitor):
+        return visitor.visit_const(self)
+
+
+class Parser:
+    def __init__(self, lines):
+        self.lines = [[t for t in toks if t.kind != "endline"] for toks in lines]
+        self.toks = []
+        self.pos = 0
+
+    def peek(self):
+        return self.toks[self.pos] if self.pos < len(self.toks) else None
+
+    def eat(self):
+        tok = self.toks[self.pos]
+        self.pos += 1
+        return tok
+
+    def error(self, message):
+        tok = self.peek()
+        if tok is not None:
+            return CompileError(tok.line, tok.col, f"{message}, got '{tok.text}'")
+        last = self.toks[-1]
+        return CompileError(
+            last.line, last.col + len(last.text), f"{message}, found end of line"
+        )
+
+    def expect(self, kind, what):
+        if self.peek() is None or self.peek().kind != kind:
+            raise self.error(f"expected {what}")
+        return self.eat()
+
+    def parse_factor(self):
+        tok = self.peek()
+        if tok is None:
+            raise self.error("expected a constant or a variable")
+        if tok.kind == "minus":
+            raise CompileError(tok.line, tok.col, "negative numbers are not supported")
+        if tok.kind == "number":
+            self.eat()
+            return ConstNode(tok.line, tok.col, int(tok.text))
+        if tok.kind == "ident":
+            self.eat()
+            return VarNode(tok.line, tok.col, tok.text)
+        raise self.error("expected a constant or a variable")
+
+    def parse_term(self):
+        node = self.parse_factor()
+        while (tok := self.peek()) is not None and tok.kind in MUL_OPS:
+            self.eat()
+            node = BinOpNode(tok.line, tok.col, MUL_OPS[tok.kind], node, self.parse_factor())
+        return node
+
+    def parse_expr(self):
+        node = self.parse_term()
+        while (tok := self.peek()) is not None and tok.kind in ADD_OPS:
+            self.eat()
+            node = BinOpNode(tok.line, tok.col, ADD_OPS[tok.kind], node, self.parse_term())
+        return node
+
+    def parse_decl(self):
+        self.eat()
+        mutable = self.peek() is not None and self.peek().kind == "kw_mut"
+        if mutable:
+            self.eat()
+        name = self.expect("ident", "a variable name")
+        if self.peek() is None or self.peek().kind != "lbrace":
             raise CompileError(
-                token.line, token.col, f"variable '{payload}' is used before its declaration"
+                name.line, name.col, f"variable '{name.text}' needs an initialiser in {{}}"
             )
-        return builder.load(symbols[payload].slot)
+        self.eat()
+        init = self.parse_expr()
+        self.expect("rbrace", "'}'")
+        return DeclNode(name.line, name.col, name.text, mutable, init)
 
-    def evaluate(expr):
-        if expr[0] == "value":
-            return load(expr[1])
-        _, left, op, right = expr
-        return emit[op](load(left), load(right))
+    def parse_assign(self):
+        name = self.eat()
+        self.expect("assign", f"':=' after '{name.text}'")
+        return AssignNode(name.line, name.col, name.text, self.parse_expr())
 
-    for statement in statements:
-        if statement[0] == "decl":
-            _, name, is_mut, expr = statement
-            value = evaluate(expr)
-            if name.text in symbols:
-                raise CompileError(
-                    name.line, name.col, f"variable '{name.text}' is already declared"
-                )
-            slot = builder.alloca(I32, name=name.text)
-            builder.store(value, slot)
-            symbols[name.text] = Var(slot, is_mut, name.line, name.col)
-        elif statement[0] == "assign":
-            _, name, expr = statement
-            if name.text not in symbols:
-                raise CompileError(
-                    name.line, name.col, f"variable '{name.text}' is used before its declaration"
-                )
-            target = symbols[name.text]
-            if not target.is_mut:
-                raise CompileError(
-                    name.line, name.col, f"cannot assign to '{name.text}': it is not mut"
-                )
-            builder.store(evaluate(expr), target.slot)
-        else:
-            value = load(statement[2])
-            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), value])
-            builder.ret(ir.Constant(I32, 0))
+    def parse_exit(self):
+        tok = self.eat()
+        return ExitNode(tok.line, tok.col, self.parse_factor())
 
-    return module
+    def parse_statement(self):
+        tok = self.peek()
+        if tok.kind == "kw_i32":
+            return self.parse_decl()
+        if tok.kind == "ident":
+            return self.parse_assign()
+        raise CompileError(tok.line, tok.col, f"'{tok.text}' does not start a statement")
+
+    def parse_program(self):
+        statements, exit_node = [], None
+        for toks in self.lines:
+            if not toks:
+                continue
+            self.toks, self.pos = toks, 0
+            if exit_node is not None:
+                tok = self.peek()
+                raise CompileError(tok.line, tok.col, "'exit' must be the last statement")
+            if self.peek().kind == "kw_exit":
+                exit_node = self.parse_exit()
+            else:
+                statements.append(self.parse_statement())
+            if self.peek() is not None:
+                tok = self.peek()
+                raise CompileError(
+                    tok.line, tok.col, f"unexpected '{tok.text}' after the statement"
+                )
+
+        if exit_node is None:
+            if not statements:
+                raise CompileError(1, 1, "the program is empty: it must end with 'exit'")
+            last = statements[-1]
+            raise CompileError(last.line, last.col, "the program must end with 'exit'")
+        return ProgramNode(1, 1, statements, exit_node)
+
+
+
+class CodeGen:
+    def __init__(self):
+        self.module = ir.Module(name="practice3")
+        self.module.triple = llvm.get_default_triple()
+
+        main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
+        self.builder = ir.IRBuilder(main.append_basic_block("entry"))
+        self.printf = ir.Function(
+            self.module,
+            ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True),
+            name="printf",
+        )
+
+        fmt_type = ir.ArrayType(I8, len(FORMAT))
+        self.fmt = ir.GlobalVariable(self.module, fmt_type, name="fmt")
+        self.fmt.linkage, self.fmt.global_constant = "private", True
+        self.fmt.initializer = ir.Constant(fmt_type, bytearray(FORMAT))
+
+        self.symbols = {}
+        self.emit = {
+            "+": self.builder.add,
+            "-": self.builder.sub,
+            "*": self.builder.mul,
+        }
+
+    def visit_program(self, node):
+        for statement in node.statements:
+            statement.accept(self)
+        node.exit.accept(self)
+        return self.module
+
+    def visit_decl(self, node):
+        value = node.init.accept(self)
+        if node.name in self.symbols:
+            raise CompileError(
+                node.line, node.col, f"variable '{node.name}' is already declared"
+            )
+        slot = self.builder.alloca(I32, name=node.name)
+        self.builder.store(value, slot)
+        self.symbols[node.name] = Var(slot, node.mutable, node.line, node.col)
+
+    def visit_assign(self, node):
+        target = self.lookup(node, node.name)
+        if not target.is_mut:
+            raise CompileError(
+                node.line, node.col, f"cannot assign to '{node.name}': it is not mut"
+            )
+        self.builder.store(node.value.accept(self), target.slot)
+
+    def visit_exit(self, node):
+        value = node.value.accept(self)
+        self.builder.call(
+            self.printf, [self.builder.bitcast(self.fmt, ir.PointerType(I8)), value]
+        )
+        self.builder.ret(ir.Constant(I32, 0))
+
+    def visit_binop(self, node):
+        left = node.left.accept(self)
+        right = node.right.accept(self)
+        return self.emit[node.op](left, right)
+
+    def visit_var(self, node):
+        return self.builder.load(self.lookup(node, node.name).slot)
+
+    def visit_const(self, node):
+        return ir.Constant(I32, node.value)
+
+    def lookup(self, node, name):
+        if name not in self.symbols:
+            raise CompileError(
+                node.line, node.col, f"variable '{name}' is used before its declaration"
+            )
+        return self.symbols[name]
 
 
 def main(argv):
-    if len(argv) != 3:
-        print(f"usage: {argv[0]} <input> <output.ll>", file=sys.stderr)
+    ast_only = len(argv) > 1 and argv[1] == "--ast"
+    args = argv[2:] if ast_only else argv[1:]
+    if len(args) != (1 if ast_only else 2):
+        print(
+            f"usage: {argv[0]} <input> <output.ll>\n"
+            f"       {argv[0]} --ast <input>",
+            file=sys.stderr,
+        )
         return 2
 
     try:
-        with open(argv[1], "rb") as f:
+        with open(args[0], "rb") as f:
             source = f.read()
     except OSError as exc:
-        print(f"cannot read {argv[1]}: {exc}", file=sys.stderr)
+        print(f"cannot read {args[0]}: {exc}", file=sys.stderr)
         return 2
 
     try:
-        module = build(parse(lex(source)))
+        program = Parser(lex(source)).parse_program()
+        if ast_only:
+            print("\n".join(program.dump()))
+            return 0
+        module = program.accept(CodeGen())
     except CompileError as exc:
         print(f"compilation error: line {exc.line}:{exc.col}: {exc.message}", file=sys.stderr)
         return 1
 
-    with open(argv[2], "w") as f:
+    with open(args[1], "w") as f:
         f.write(str(module))
     return 0
 
