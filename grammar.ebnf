@@ -1,0 +1,24 @@
+(* The Practice 2 language in EBNF.
+   Quoted words are terminals: tokens the lexer emits, with the same text.
+   ident and number are terminals too; how they are spelled is lexer.py's rule. *)
+
+program    ::= { statement } exit_stmt
+
+statement  ::= decl | assign
+
+decl       ::= "i32" [ "mut" ] ident "{" value "}"
+
+assign     ::= ident ":=" value
+
+exit_stmt  ::= "exit" operand
+
+value      ::= operand [ ( "+" | "-" | "*" ) operand ]
+
+operand    ::= number | ident
+
+
+(* One statement per line. The lexer gives one token vector per line, so the
+   line loop consumes the endline token and no rule here mentions it. *)
+
+(* Left out on purpose, checked in the walk: declared before use, declared
+   once, mut before :=. *)
