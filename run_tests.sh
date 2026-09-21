@@ -19,13 +19,11 @@ for src in tests/*.txt; do
             sed 's/^/      /' "$TMP/err"
             fail=$((fail + 1)); continue
         fi
-        if ! (llc -filetype=obj -relocation-model=pic "$ll" -o "$TMP/$name.o" \
-              && clang -fPIE "$TMP/$name.o" -o "$TMP/$name.bin") 2>"$TMP/err"; then
-            echo "FAIL $name: llc/clang failed"
+        if ! actual=$(lli "$ll" 2>"$TMP/err"); then
+            echo "FAIL $name: lli failed"
             sed 's/^/      /' "$TMP/err"
             fail=$((fail + 1)); continue
         fi
-        actual=$("$TMP/$name.bin")
     else
         if python3 compiler.py "$src" "$ll" 2>"$TMP/err"; then
             echo "FAIL $name: expected a compilation error"

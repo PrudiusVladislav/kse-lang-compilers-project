@@ -1,0 +1,8 @@
+i32 x{0}
+i32 mut y{10}
+i32 z{2+5}
+
+i32 mut total_2 { x + 10 }
+	y := y * z
+y := y - 1
+exit y
