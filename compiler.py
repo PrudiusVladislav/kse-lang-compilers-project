@@ -6,7 +6,8 @@ import llvmlite.binding as llvm
 from lexer import CompileError, lex
 
 I64, I32, I8, I1 = ir.IntType(64), ir.IntType(32), ir.IntType(8), ir.IntType(1)
-FORMAT = b"Program exit with result %d\n\0"
+FORMAT_INT = b"Program exit with result %lld\n\0"
+FORMAT_BOOL = b"Program exit with result %s\n\0"
 IR_TYPES = {"i32": I32, "i64": I64, "bool": I1}
 I32_MAX, I64_MAX = 2**31 - 1, 2**63 - 1
 
@@ -366,7 +367,7 @@ class SemanticChecker:
 
 class CodeGen:
     def __init__(self):
-        self.module = ir.Module(name="practice3")
+        self.module = ir.Module(name="practice4")
         self.module.triple = llvm.get_default_triple()
 
         main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
@@ -377,10 +378,10 @@ class CodeGen:
             name="printf",
         )
 
-        fmt_type = ir.ArrayType(I8, len(FORMAT))
-        self.fmt = ir.GlobalVariable(self.module, fmt_type, name="fmt")
-        self.fmt.linkage, self.fmt.global_constant = "private", True
-        self.fmt.initializer = ir.Constant(fmt_type, bytearray(FORMAT))
+        self.fmt_int = self.global_string("fmt_int", FORMAT_INT)
+        self.fmt_bool = self.global_string("fmt_bool", FORMAT_BOOL)
+        self.true_text = self.global_string("true", b"true\0")
+        self.false_text = self.global_string("false", b"false\0")
 
         self.slots = {}
         self.emit = {
@@ -393,6 +394,25 @@ class CodeGen:
         if have == "i32" and want == "i64":
             return self.builder.sext(value, I64, name="wide")
         return value
+
+    def global_string(self, name, data):
+        text_type = ir.ArrayType(I8, len(data))
+        text = ir.GlobalVariable(self.module, text_type, name=name)
+        text.linkage, text.global_constant = "private", True
+        text.initializer = ir.Constant(text_type, bytearray(data))
+        return text
+
+    def pointer(self, text):
+        return self.builder.bitcast(text, ir.PointerType(I8))
+
+    def print_int(self, value):
+        self.builder.call(self.printf, [self.pointer(self.fmt_int), value])
+
+    def print_bool(self, value):
+        text = self.builder.select(
+            value, self.pointer(self.true_text), self.pointer(self.false_text)
+        )
+        self.builder.call(self.printf, [self.pointer(self.fmt_bool), text])
 
     def visit_program(self, node):
         for statement in node.statements:
