@@ -1,10 +1,22 @@
-START, IDENT, NUMBER, COLON = "START", "IDENT", "NUMBER", "COLON"
+START, IDENT, NUMBER, COLON, EQ, BANG = "START", "IDENT", "NUMBER", "COLON", "EQ", "BANG"
 
-KEYWORDS = {"i32": "kw_i32", "mut": "kw_mut", "exit": "kw_exit"}
+KEYWORDS = {
+    "i32": "kw_i32",
+    "i64": "kw_i64",
+    "bool": "kw_bool",
+    "mut": "kw_mut",
+    "exit": "kw_exit",
+    "true": "kw_true",
+    "false": "kw_false",
+}
 CATEGORIES = {
     "kw_i32": ("keyword", "typename"),
+    "kw_i64": ("keyword", "typename"),
+    "kw_bool": ("keyword", "typename"),
     "kw_mut": ("keyword", "specifier"),
     "kw_exit": ("keyword", "statement"),
+    "kw_true": ("constant", "boolean"),
+    "kw_false": ("constant", "boolean"),
     "ident": ("identifier", None),
     "number": ("constant", "numeric"),
     "lbrace": ("block", "start"),
@@ -13,6 +25,8 @@ CATEGORIES = {
     "plus": ("operator", "arithmetic"),
     "minus": ("operator", "arithmetic"),
     "star": ("operator", "arithmetic"),
+    "eq": ("operator", "comparison"),
+    "ne": ("operator", "comparison"),
     "endline": ("endline", None),
 }
 SINGLES = {
@@ -22,6 +36,7 @@ SINGLES = {
     ord("-"): "minus",
     ord("*"): "star",
 }
+PAIRS = {EQ: ("eq", "=="), BANG: ("ne", "!=")}
 
 
 class CompileError(Exception):
@@ -84,6 +99,10 @@ def lex(data):
                 state, start, start_col = NUMBER, i, col
             elif b == ord(":"):
                 state, start_col = COLON, col
+            elif b == ord("="):
+                state, start_col = EQ, col
+            elif b == ord("!"):
+                state, start_col = BANG, col
             elif b in SINGLES:
                 kind = SINGLES[b]
                 if kind == "lbrace":
@@ -124,6 +143,14 @@ def lex(data):
             else:
                 raise CompileError(line, start_col, "':' is not followed by '='")
 
+        elif state in PAIRS:
+            kind, text = PAIRS[state]
+            if b == ord("="):
+                tokens.append(Token(kind, text, line, start_col))
+                state = START
+            else:
+                raise single_error(state, line, start_col)
+
         i += 1
         col += 1
 
@@ -134,6 +161,13 @@ def lex(data):
     if tokens:
         lines.append(tokens)
     return lines
+
+
+def single_error(state, line, col):
+    text = PAIRS[state][1]
+    return CompileError(
+        line, col, f"expected '{text}' (a single '{text[0]}' is not an operator)"
+    )
 
 
 def byte_text(b):
