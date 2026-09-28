@@ -1,10 +1,22 @@
-START, IDENT, NUMBER, COLON = "START", "IDENT", "NUMBER", "COLON"
+START, IDENT, NUMBER, PAIR = "START", "IDENT", "NUMBER", "PAIR"
 
-KEYWORDS = {"i32": "kw_i32", "mut": "kw_mut", "exit": "kw_exit"}
+KEYWORDS = {
+    "i32": "kw_i32",
+    "i64": "kw_i64",
+    "bool": "kw_bool",
+    "mut": "kw_mut",
+    "exit": "kw_exit",
+    "true": "kw_true",
+    "false": "kw_false",
+}
 CATEGORIES = {
     "kw_i32": ("keyword", "typename"),
+    "kw_i64": ("keyword", "typename"),
+    "kw_bool": ("keyword", "typename"),
     "kw_mut": ("keyword", "specifier"),
     "kw_exit": ("keyword", "statement"),
+    "kw_true": ("constant", "boolean"),
+    "kw_false": ("constant", "boolean"),
     "ident": ("identifier", None),
     "number": ("constant", "numeric"),
     "lbrace": ("block", "start"),
@@ -13,6 +25,8 @@ CATEGORIES = {
     "plus": ("operator", "arithmetic"),
     "minus": ("operator", "arithmetic"),
     "star": ("operator", "arithmetic"),
+    "eq": ("operator", "comparison"),
+    "ne": ("operator", "comparison"),
     "endline": ("endline", None),
 }
 SINGLES = {
@@ -21,6 +35,11 @@ SINGLES = {
     ord("+"): "plus",
     ord("-"): "minus",
     ord("*"): "star",
+}
+PAIRS = {
+    ord(":"): ("assign", ":=", "':' is not followed by '='"),
+    ord("="): ("eq", "==", "expected '==' (a single '=' is not an operator)"),
+    ord("!"): ("ne", "!=", "expected '!=' (a single '!' is not an operator)"),
 }
 
 
@@ -82,8 +101,8 @@ def lex(data):
                 state, start, start_col = IDENT, i, col
             elif is_digit(b):
                 state, start, start_col = NUMBER, i, col
-            elif b == ord(":"):
-                state, start_col = COLON, col
+            elif b in PAIRS:
+                state, pair, start_col = PAIR, PAIRS[b], col
             elif b in SINGLES:
                 kind = SINGLES[b]
                 if kind == "lbrace":
@@ -117,18 +136,17 @@ def lex(data):
                 state = START
                 continue
 
-        elif state == COLON:
+        elif state == PAIR:
+            kind, text, message = pair
             if b == ord("="):
-                tokens.append(Token("assign", ":=", line, start_col))
+                tokens.append(Token(kind, text, line, start_col))
                 state = START
             else:
-                raise CompileError(line, start_col, "':' is not followed by '='")
+                raise CompileError(line, start_col, message)
 
         i += 1
         col += 1
 
-    if state == COLON:
-        raise CompileError(line, start_col, "':' is not followed by '='")
     if brace_col is not None:
         raise CompileError(line, brace_col, "'{' is not closed before the end of the line")
     if tokens:
