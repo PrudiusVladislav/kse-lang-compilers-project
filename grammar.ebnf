@@ -30,5 +30,10 @@ factor     ::= number | "true" | "false" | ident
    program is what rejects a statement after exit and a program without one:
    exit_stmt sits outside the repetition, so it is required and it is last. *)
 
-(* Left out on purpose, checked in the walk: declared before use, declared
-   once, mut before :=. *)
+(* expr allows at most one comparison, and it binds weaker than arithmetic:
+   the second arith is the only place "==" or "!=" can appear, so a second
+   comparison is left over after the expression and rejected there.
+
+   Types are not in the grammar: i32 a{true} parses. Left out on purpose,
+   checked in the semantic pass: declared before use, declared once, mut
+   before :=, and the type rules. *)
