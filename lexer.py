@@ -1,4 +1,4 @@
-START, IDENT, NUMBER, COLON, EQ, BANG = "START", "IDENT", "NUMBER", "COLON", "EQ", "BANG"
+START, IDENT, NUMBER, PAIR = "START", "IDENT", "NUMBER", "PAIR"
 
 KEYWORDS = {
     "i32": "kw_i32",
@@ -36,7 +36,11 @@ SINGLES = {
     ord("-"): "minus",
     ord("*"): "star",
 }
-PAIRS = {EQ: ("eq", "=="), BANG: ("ne", "!=")}
+PAIRS = {
+    ord(":"): ("assign", ":=", "':' is not followed by '='"),
+    ord("="): ("eq", "==", "expected '==' (a single '=' is not an operator)"),
+    ord("!"): ("ne", "!=", "expected '!=' (a single '!' is not an operator)"),
+}
 
 
 class CompileError(Exception):
@@ -97,12 +101,8 @@ def lex(data):
                 state, start, start_col = IDENT, i, col
             elif is_digit(b):
                 state, start, start_col = NUMBER, i, col
-            elif b == ord(":"):
-                state, start_col = COLON, col
-            elif b == ord("="):
-                state, start_col = EQ, col
-            elif b == ord("!"):
-                state, start_col = BANG, col
+            elif b in PAIRS:
+                state, pair, start_col = PAIR, PAIRS[b], col
             elif b in SINGLES:
                 kind = SINGLES[b]
                 if kind == "lbrace":
@@ -136,38 +136,22 @@ def lex(data):
                 state = START
                 continue
 
-        elif state == COLON:
-            if b == ord("="):
-                tokens.append(Token("assign", ":=", line, start_col))
-                state = START
-            else:
-                raise CompileError(line, start_col, "':' is not followed by '='")
-
-        elif state in PAIRS:
-            kind, text = PAIRS[state]
+        elif state == PAIR:
+            kind, text, message = pair
             if b == ord("="):
                 tokens.append(Token(kind, text, line, start_col))
                 state = START
             else:
-                raise single_error(state, line, start_col)
+                raise CompileError(line, start_col, message)
 
         i += 1
         col += 1
 
-    if state == COLON:
-        raise CompileError(line, start_col, "':' is not followed by '='")
     if brace_col is not None:
         raise CompileError(line, brace_col, "'{' is not closed before the end of the line")
     if tokens:
         lines.append(tokens)
     return lines
-
-
-def single_error(state, line, col):
-    text = PAIRS[state][1]
-    return CompileError(
-        line, col, f"expected '{text}' (a single '{text[0]}' is not an operator)"
-    )
 
 
 def byte_text(b):

@@ -103,7 +103,7 @@ or `!` is a lexical error.
 one `coerce` helper, called from the initialiser, the assignment, both operands
 of `+ - *`, both operands of `== !=`, and the exit value. Comparisons are
 `icmp` on operands of equal width; integers are printed as `i64` with `%lld`,
-bools by a `select` between two string constants.
+bools by a `select` between two complete format strings.
 
 ## Deliberate decisions
 
@@ -146,7 +146,7 @@ docker run --rm -v "$PWD:/work" lcd-practice4 ./run_tests.sh
 ## Layout
 
 ```
-lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, COLON, EQ, BANG
+lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, PAIR
 grammar.ebnf    the grammar, one rule per parse method
 compiler.py     the AST classes, the parser, the semantic pass, the codegen walk
 tests/          19 programs that run, 35 that must fail, 5 with expected trees

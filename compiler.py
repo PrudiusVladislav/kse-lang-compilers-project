@@ -7,7 +7,8 @@ from lexer import CompileError, lex
 
 I64, I32, I8, I1 = ir.IntType(64), ir.IntType(32), ir.IntType(8), ir.IntType(1)
 FORMAT_INT = b"Program exit with result %lld\n\0"
-FORMAT_BOOL = b"Program exit with result %s\n\0"
+FORMAT_TRUE = b"Program exit with result true\n\0"
+FORMAT_FALSE = b"Program exit with result false\n\0"
 IR_TYPES = {"i32": I32, "i64": I64, "bool": I1}
 I32_MAX, I64_MAX = 2**31 - 1, 2**63 - 1
 
@@ -378,11 +379,6 @@ class CodeGen:
             name="printf",
         )
 
-        self.fmt_int = self.global_string("fmt_int", FORMAT_INT)
-        self.fmt_bool = self.global_string("fmt_bool", FORMAT_BOOL)
-        self.true_text = self.global_string("true", b"true\0")
-        self.false_text = self.global_string("false", b"false\0")
-
         self.slots = {}
         self.emit = {
             "+": self.builder.add,
@@ -400,19 +396,18 @@ class CodeGen:
         text = ir.GlobalVariable(self.module, text_type, name=name)
         text.linkage, text.global_constant = "private", True
         text.initializer = ir.Constant(text_type, bytearray(data))
-        return text
-
-    def pointer(self, text):
-        return self.builder.bitcast(text, ir.PointerType(I8))
+        return text.bitcast(ir.PointerType(I8))
 
     def print_int(self, value):
-        self.builder.call(self.printf, [self.pointer(self.fmt_int), value])
+        self.builder.call(self.printf, [self.global_string("fmt_int", FORMAT_INT), value])
 
     def print_bool(self, value):
-        text = self.builder.select(
-            value, self.pointer(self.true_text), self.pointer(self.false_text)
+        fmt = self.builder.select(
+            value,
+            self.global_string("fmt_true", FORMAT_TRUE),
+            self.global_string("fmt_false", FORMAT_FALSE),
         )
-        self.builder.call(self.printf, [self.pointer(self.fmt_bool), text])
+        self.builder.call(self.printf, [fmt])
 
     def visit_program(self, node):
         for statement in node.statements:
