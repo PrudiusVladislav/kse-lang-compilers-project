@@ -296,11 +296,11 @@ class CodeGen:
         return self.module
 
     def visit_decl(self, node):
-        value = node.init.accept(self)
         if node.name in self.symbols:
             raise CompileError(
                 node.line, node.col, f"variable '{node.name}' is already declared"
             )
+        value = node.init.accept(self)
         slot = self.builder.alloca(I32, name=node.name)
         self.builder.store(value, slot)
         self.symbols[node.name] = Var(slot, node.mutable, node.line, node.col)
