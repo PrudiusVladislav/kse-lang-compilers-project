@@ -1,0 +1,30 @@
+(* The language in EBNF, with the Practice 3 expression rules.
+   Quoted words are terminals: tokens the lexer emits, with the same text.
+   ident and number are terminals too; how they are spelled is lexer.py's rule. *)
+
+program    ::= { statement } exit_stmt
+
+statement  ::= decl | assign
+
+decl       ::= "i32" [ "mut" ] ident "{" expr "}"
+
+assign     ::= ident ":=" expr
+
+exit_stmt  ::= "exit" factor
+
+expr       ::= term { ( "+" | "-" ) term }
+
+term       ::= factor { "*" factor }
+
+factor     ::= number | ident
+
+
+(* Line structure is lexical: the lexer gives one token vector per line, the
+   parser drops the endline tokens, and a line with no tokens is skipped. So
+   one statement per line and blank lines cost no rule here.
+
+   program is what rejects a statement after exit and a program without one:
+   exit_stmt sits outside the repetition, so it is required and it is last. *)
+
+(* Left out on purpose, checked in the walk: declared before use, declared
+   once, mut before :=. *)
