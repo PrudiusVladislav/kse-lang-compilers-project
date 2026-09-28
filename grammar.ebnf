@@ -1,4 +1,4 @@
-(* The language in EBNF, with the Practice 3 expression rules.
+(* The language in EBNF, with the Practice 4 types and comparison.
    Quoted words are terminals: tokens the lexer emits, with the same text.
    ident and number are terminals too; how they are spelled is lexer.py's rule. *)
 
@@ -6,17 +6,21 @@ program    ::= { statement } exit_stmt
 
 statement  ::= decl | assign
 
-decl       ::= "i32" [ "mut" ] ident "{" expr "}"
+decl       ::= type [ "mut" ] ident "{" expr "}"
+
+type       ::= "i32" | "i64" | "bool"
 
 assign     ::= ident ":=" expr
 
 exit_stmt  ::= "exit" factor
 
-expr       ::= term { ( "+" | "-" ) term }
+expr       ::= arith [ ( "==" | "!=" ) arith ]
+
+arith      ::= term { ( "+" | "-" ) term }
 
 term       ::= factor { "*" factor }
 
-factor     ::= number | ident
+factor     ::= number | "true" | "false" | ident
 
 
 (* Line structure is lexical: the lexer gives one token vector per line, the
