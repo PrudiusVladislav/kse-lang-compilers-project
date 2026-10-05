@@ -231,9 +231,17 @@ class BoolNode(ExprNode):
 
 class Parser:
     def __init__(self, lines):
-        self.lines = [[t for t in toks if t.kind != "endline"] for toks in lines]
+        self.lines = [toks for toks in ([t for t in l if t.kind != "endline"] for l in lines) if toks]
+        self.line_pos = 0
         self.toks = []
         self.pos = 0
+
+    def peek_line(self):
+        return self.lines[self.line_pos] if self.line_pos < len(self.lines) else None
+
+    def next_line(self):
+        self.toks, self.pos = self.lines[self.line_pos], 0
+        self.line_pos += 1
 
     def peek(self):
         return self.toks[self.pos] if self.pos < len(self.toks) else None
@@ -251,6 +259,10 @@ class Parser:
         return CompileError(
             last.line, last.col + len(last.text), f"{message}, found end of line"
         )
+
+    def end_line(self):
+        if (tok := self.peek()) is not None:
+            raise CompileError(tok.line, tok.col, f"unexpected '{tok.text}' after the statement")
 
     def expect(self, kind, what):
         if self.peek() is None or self.peek().kind != kind:
@@ -272,6 +284,9 @@ class Parser:
         if tok.kind == "ident":
             self.eat()
             return VarNode(tok.line, tok.col, tok.text)
+        if tok.kind == "not":
+            self.eat()
+            return NotNode(tok.line, tok.col, self.parse_factor())
         raise self.error("expected a constant or a variable")
 
     def parse_term(self):
@@ -315,6 +330,45 @@ class Parser:
         self.expect("assign", f"':=' after '{name.text}'")
         return AssignNode(name.line, name.col, name.text, self.parse_expr())
 
+    def parse_block(self, after):
+        if self.peek_line() is not None:
+            self.next_line()
+        brace = self.expect("lbrace", f"'{{' on its own line after '{after}'")
+        self.end_line()
+        statements, exit_node = self.parse_body()
+        toks = self.peek_line()
+        if toks is None:
+            raise CompileError(brace.line, brace.col, "'{' is never closed")
+        if toks[0].kind != "rbrace":
+            raise CompileError(
+                toks[0].line, toks[0].col, "statement after 'exit' in the same block"
+            )
+        if not statements and exit_node is None:
+            raise CompileError(brace.line, brace.col, "empty block")
+        self.next_line()
+        self.eat()
+        self.end_line()
+        return BlockNode(brace.line, brace.col, statements, exit_node)
+
+    def parse_if(self):
+        tok = self.eat()
+        cond = self.parse_expr()
+        self.end_line()
+        then_block = self.parse_block("if")
+        else_block = None
+        if (toks := self.peek_line()) is not None and toks[0].kind == "kw_else":
+            self.next_line()
+            self.eat()
+            self.end_line()
+            else_block = self.parse_block("else")
+        return IfNode(tok.line, tok.col, cond, then_block, else_block)
+
+    def parse_while(self):
+        tok = self.eat()
+        cond = self.parse_expr()
+        self.end_line()
+        return WhileNode(tok.line, tok.col, cond, self.parse_block("while"))
+
     def parse_exit(self):
         tok = self.eat()
         return ExitNode(tok.line, tok.col, self.parse_factor())
@@ -325,26 +379,33 @@ class Parser:
             return self.parse_decl()
         if tok.kind == "ident":
             return self.parse_assign()
+        if tok.kind == "kw_if":
+            return self.parse_if()
+        if tok.kind == "kw_while":
+            return self.parse_while()
+        if tok.kind == "kw_else":
+            raise CompileError(tok.line, tok.col, "'else' without an 'if'")
         raise CompileError(tok.line, tok.col, f"'{tok.text}' does not start a statement")
 
-    def parse_program(self):
+    def parse_body(self):
         statements, exit_node = [], None
-        for toks in self.lines:
-            if not toks:
-                continue
-            self.toks, self.pos = toks, 0
-            if exit_node is not None:
-                tok = self.peek()
-                raise CompileError(tok.line, tok.col, "'exit' must be the last statement")
-            if self.peek().kind == "kw_exit":
-                exit_node = self.parse_exit()
-            else:
-                statements.append(self.parse_statement())
-            if self.peek() is not None:
-                tok = self.peek()
-                raise CompileError(
-                    tok.line, tok.col, f"unexpected '{tok.text}' after the statement"
-                )
+        while (toks := self.peek_line()) is not None and toks[0].kind not in ("kw_exit", "rbrace"):
+            self.next_line()
+            statements.append(self.parse_statement())
+            self.end_line()
+        if toks is not None and toks[0].kind == "kw_exit":
+            self.next_line()
+            exit_node = self.parse_exit()
+            self.end_line()
+        return statements, exit_node
+
+    def parse_program(self):
+        statements, exit_node = self.parse_body()
+        if (toks := self.peek_line()) is not None:
+            tok = toks[0]
+            if tok.kind == "rbrace":
+                raise CompileError(tok.line, tok.col, "'}' without a matching '{'")
+            raise CompileError(tok.line, tok.col, "'exit' must be the last statement")
 
         if exit_node is None:
             if not statements:
