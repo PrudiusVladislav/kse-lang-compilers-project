@@ -93,6 +93,39 @@ class AssignNode(StmtNode):
         return visitor.visit_assign(self)
 
 
+class IfNode(StmtNode):
+    def __init__(self, line, col, cond, then_block, else_block):
+        super().__init__(line, col)
+        self.cond = cond
+        self.then_block = then_block
+        self.else_block = else_block
+
+    def label(self):
+        return "If"
+
+    def children(self):
+        return [self.cond, self.then_block] + ([self.else_block] if self.else_block else [])
+
+    def accept(self, visitor):
+        return visitor.visit_if(self)
+
+
+class WhileNode(StmtNode):
+    def __init__(self, line, col, cond, body):
+        super().__init__(line, col)
+        self.cond = cond
+        self.body = body
+
+    def label(self):
+        return "While"
+
+    def children(self):
+        return [self.cond, self.body]
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
+
+
 class ExitNode(Node):
     def __init__(self, line, col, value):
         super().__init__(line, col)
@@ -106,6 +139,22 @@ class ExitNode(Node):
 
     def accept(self, visitor):
         return visitor.visit_exit(self)
+
+
+class BlockNode(Node):
+    def __init__(self, line, col, statements, exit):
+        super().__init__(line, col)
+        self.statements = statements
+        self.exit = exit
+
+    def label(self):
+        return "Block"
+
+    def children(self):
+        return self.statements + ([self.exit] if self.exit else [])
+
+    def accept(self, visitor):
+        return visitor.visit_block(self)
 
 
 class ExprNode(Node):
@@ -127,6 +176,21 @@ class BinOpNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_binop(self)
+
+
+class NotNode(ExprNode):
+    def __init__(self, line, col, operand):
+        super().__init__(line, col)
+        self.operand = operand
+
+    def label(self):
+        return "Not"
+
+    def children(self):
+        return [self.operand]
+
+    def accept(self, visitor):
+        return visitor.visit_not(self)
 
 
 class VarNode(ExprNode):
