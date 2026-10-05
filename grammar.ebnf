@@ -1,4 +1,4 @@
-(* The language in EBNF, with the Practice 4 types and comparison.
+(* The language in EBNF, with the Practice 5 branches, blocks and '!'.
    Quoted words are terminals: tokens the lexer emits, with the same text.
    ident and number are terminals too; how they are spelled is lexer.py's rule. *)
 
@@ -28,7 +28,15 @@ factor     ::= number | "true" | "false" | ident
    one statement per line and blank lines cost no rule here.
 
    program is what rejects a statement after exit and a program without one:
-   exit_stmt sits outside the repetition, so it is required and it is last. *)
+   exit_stmt sits outside the repetition, so it is required and it is last.
+   A block says the same thing one level down, which is why NL is written out
+   from Practice 5 on: a statement used to be a line, but an if is several, so
+   the parser needs a line cursor beside its token cursor and the grammar needs
+   to say where the line ends. '{', '}' and else each stand alone on theirs.
+
+   Braces are the parser's now, not the lexer's. 'i32 x{5' is still an error at
+   the same place, but it is expect('}') that reports it at the end of the line
+   rather than a lexer that refused to let '{' outlive its line. *)
 
 (* expr allows at most one comparison, and it binds weaker than arithmetic:
    the second arith is the only place "==" or "!=" can appear, so a second
@@ -36,4 +44,13 @@ factor     ::= number | "true" | "false" | ident
 
    Types are not in the grammar: i32 a{true} parses. Left out on purpose,
    checked in the semantic pass: declared before use, declared once, mut
-   before :=, and the type rules. *)
+   before :=, and the type rules. A bool condition and a bool under '!' are
+   two more of the same kind.
+
+   '!' is in factor and recurses on factor, so it binds tighter than every
+   operator: !a == b compares !a with b, and !!a is a factor twice over.
+
+   Scopes are not in the grammar either. A block is one rule here and one
+   frame in the semantic pass and one builder position in codegen, and those
+   three do not line up: merge belongs to no brace, and an exit ends a basic
+   block without popping a frame. *)
