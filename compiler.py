@@ -552,10 +552,12 @@ class CodeGen:
         return value
 
     def global_string(self, name, data):
-        text_type = ir.ArrayType(I8, len(data))
-        text = ir.GlobalVariable(self.module, text_type, name=name)
-        text.linkage, text.global_constant = "private", True
-        text.initializer = ir.Constant(text_type, bytearray(data))
+        text = self.module.globals.get(name)
+        if text is None:
+            text_type = ir.ArrayType(I8, len(data))
+            text = ir.GlobalVariable(self.module, text_type, name=name)
+            text.linkage, text.global_constant = "private", True
+            text.initializer = ir.Constant(text_type, bytearray(data))
         return text.bitcast(ir.PointerType(I8))
 
     def print_int(self, value):
@@ -585,6 +587,31 @@ class CodeGen:
         value = self.coerce(node.value.accept(self), node.value.type, node.decl.type_name)
         self.builder.store(value, self.slots[node.decl])
 
+    def branch_unless_terminated(self, target):
+        if not self.builder.block.is_terminated:
+            self.builder.branch(target)
+
+    def visit_if(self, node):
+        then_bb = self.function.append_basic_block("then")
+        else_bb = self.function.append_basic_block("else") if node.else_block else None
+        merge_bb = self.function.append_basic_block("merge")
+        self.builder.cbranch(node.cond.accept(self), then_bb, else_bb or merge_bb)
+
+        self.builder.position_at_end(then_bb)
+        node.then_block.accept(self)
+        self.branch_unless_terminated(merge_bb)
+        if else_bb:
+            self.builder.position_at_end(else_bb)
+            node.else_block.accept(self)
+            self.branch_unless_terminated(merge_bb)
+        self.builder.position_at_end(merge_bb)
+
+    def visit_block(self, node):
+        for statement in node.statements:
+            statement.accept(self)
+        if node.exit:
+            node.exit.accept(self)
+
     def visit_exit(self, node):
         value = node.value.accept(self)
         if node.value.type == "bool":
@@ -600,6 +627,9 @@ class CodeGen:
         if node.op in "+-*":
             return self.emit[node.op](left, right)
         return self.builder.icmp_signed(node.op, left, right)
+
+    def visit_not(self, node):
+        return self.builder.xor(node.operand.accept(self), ir.Constant(I1, True))
 
     def visit_var(self, node):
         return self.builder.load(self.slots[node.decl])
