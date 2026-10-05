@@ -432,11 +432,11 @@ class SemanticChecker:
 
 class CodeGen:
     def __init__(self):
-        self.module = ir.Module(name="practice4")
+        self.module = ir.Module(name="practice5")
         self.module.triple = llvm.get_default_triple()
 
-        main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
-        self.builder = ir.IRBuilder(main.append_basic_block("entry"))
+        self.function = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
+        self.builder = ir.IRBuilder(self.function.append_basic_block("entry"))
         self.printf = ir.Function(
             self.module,
             ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True),
@@ -449,6 +449,10 @@ class CodeGen:
             "-": self.builder.sub,
             "*": self.builder.mul,
         }
+
+    def alloca_entry(self, type, name):
+        with self.builder.goto_entry_block():
+            return self.builder.alloca(type, name=name)
 
     def coerce(self, value, have, want):
         if have == "i32" and want == "i64":
@@ -481,7 +485,7 @@ class CodeGen:
 
     def visit_decl(self, node):
         value = self.coerce(node.init.accept(self), node.init.type, node.type_name)
-        slot = self.builder.alloca(IR_TYPES[node.type_name], name=node.name)
+        slot = self.alloca_entry(IR_TYPES[node.type_name], node.name)
         self.builder.store(value, slot)
         self.slots[node] = slot
 
