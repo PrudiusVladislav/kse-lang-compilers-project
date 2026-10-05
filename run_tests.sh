@@ -9,11 +9,12 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0
 fail=0
 
-for src in tests/*.txt; do
-    name=$(basename "$src" .txt)
-    ll="$TMP/$name.ll"
+for src in tests/ok/*.txt tests/err/*.txt; do
+    base=${src%.txt}
+    name=${base#tests/}
+    ll="$TMP/${name//\//_}.ll"
 
-    if [[ $name == ok_* ]]; then
+    if [[ $name == ok/* ]]; then
         if ! python3 compiler.py "$src" "$ll" 2>"$TMP/err"; then
             echo "FAIL $name: compiler failed"
             sed 's/^/      /' "$TMP/err"
@@ -24,9 +25,9 @@ for src in tests/*.txt; do
             sed 's/^/      /' "$TMP/err"
             fail=$((fail + 1)); continue
         fi
-        if [[ -e tests/$name.ast ]] && ! python3 compiler.py --ast "$src" | diff -q - "tests/$name.ast" >/dev/null; then
-            echo "FAIL $name: --ast does not match tests/$name.ast"
-            python3 compiler.py --ast "$src" | diff - "tests/$name.ast" | sed 's/^/      /'
+        if [[ -e $base.ast ]] && ! python3 compiler.py --ast "$src" | diff -q - "$base.ast" >/dev/null; then
+            echo "FAIL $name: --ast does not match $base.ast"
+            python3 compiler.py --ast "$src" | diff - "$base.ast" | sed 's/^/      /'
             fail=$((fail + 1)); continue
         fi
     else
@@ -41,12 +42,12 @@ for src in tests/*.txt; do
         actual=$(cat "$TMP/err")
     fi
 
-    if [[ $actual == "$(cat "tests/$name.expected")" ]]; then
+    if [[ $actual == "$(cat "$base.expected")" ]]; then
         echo "ok   $name"
         pass=$((pass + 1))
     else
         echo "FAIL $name"
-        echo "      expected: $(cat "tests/$name.expected")"
+        echo "      expected: $(cat "$base.expected")"
         echo "      actual:   $actual"
         fail=$((fail + 1))
     fi

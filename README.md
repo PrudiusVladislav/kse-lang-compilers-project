@@ -111,19 +111,19 @@ bools by a `select` between two complete format strings.
 `variable 'x' is used before its declaration`. The name is entered into the symbol
 table only *after* its initialiser has been checked, so a variable can never be
 read from its own initialiser — the error falls out of the declaration-before-use
-rule instead of needing a check of its own. See `tests/err_self_init.txt`.
+rule instead of needing a check of its own. See `tests/err/self_init.txt`.
 
 **Negative numbers.** Number literals are unsigned: a `number` token is digits
 only, so `-` is always the binary subtraction operator. `i32 x{-5}` is rejected
-(`tests/err_negative_literal.txt`). Negative *values* are fully supported —
-arithmetic is signed and `exit` prints negative results (`tests/ok_negative.txt`).
+(`tests/err/negative_literal.txt`). Negative *values* are fully supported —
+arithmetic is signed and `exit` prints negative results (`tests/ok/negative.txt`).
 
 **Where an oversized constant is reported.** A bare constant that is too big for
 an `i32` target — `i32 x{3000000000}` or `x := 3000000000` — is reported at the
 constant: `constant 3000000000 does not fit in i32`. Inside an operation it is
 the operation's type that does not fit, so `i32 x{a + 3000000000}` gets the usual
 `cannot initialise 'x' of type i32 with a value of type i64` at the name
-(`tests/err_const_in_arith.txt`).
+(`tests/err/const_in_arith.txt`).
 
 ## Tests
 
@@ -131,10 +131,10 @@ the operation's type that does not fit, so `i32 x{a + 3000000000}` gets the usua
 ./run_tests.sh
 ```
 
-Each `tests/NAME.txt` is paired with `tests/NAME.expected`. An `ok_` program is
-compiled and run through `lli`, and its stdout is compared; an `err_` program
-must fail with the expected message and leave no output file. Where a
-`tests/NAME.ast` exists, the `--ast` dump is compared against it too.
+Each `NAME.txt` is paired with `NAME.expected`. A program in `tests/ok/` is
+compiled and run through `lli`, and its stdout is compared; a program in
+`tests/err/` must fail with the expected message and leave no output file. Where
+a `tests/ok/NAME.ast` exists, the `--ast` dump is compared against it too.
 
 Everything needed is in the `Dockerfile`:
 
@@ -149,7 +149,8 @@ docker run --rm -v "$PWD:/work" lcd-practice4 ./run_tests.sh
 lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, PAIR
 grammar.ebnf    the grammar, one rule per parse method
 compiler.py     the AST classes, the parser, the semantic pass, the codegen walk
-tests/          19 programs that run, 35 that must fail, 5 with expected trees
+tests/ok/       19 programs that run, 5 of them with expected trees
+tests/err/      35 programs that must fail
 run_tests.sh    compiles and runs each test, compares against .expected
 Dockerfile      ubuntu:24.04 with llvm, clang and llvmlite
 ```
