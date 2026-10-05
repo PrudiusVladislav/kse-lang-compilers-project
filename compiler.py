@@ -417,14 +417,21 @@ class Parser:
 
 class SemanticChecker:
     def __init__(self):
-        self.symbols = {}
+        self.scopes = [{}]
 
     def lookup(self, node):
-        if node.name not in self.symbols:
+        for frame in reversed(self.scopes):
+            if node.name in frame:
+                return frame[node.name]
+        raise CompileError(
+            node.line, node.col, f"variable '{node.name}' is used before its declaration"
+        )
+
+    def check_condition(self, node, keyword):
+        if (have := node.cond.accept(self)) != "bool":
             raise CompileError(
-                node.line, node.col, f"variable '{node.name}' is used before its declaration"
+                node.line, node.col, f"the condition of '{keyword}' must be bool, got {have}"
             )
-        return self.symbols[node.name]
 
     def check_assignable(self, expr, want, at, what):
         have = expr.type
@@ -442,13 +449,13 @@ class SemanticChecker:
         node.exit.accept(self)
 
     def visit_decl(self, node):
-        if node.name in self.symbols:
+        if node.name in self.scopes[-1]:
             raise CompileError(
-                node.line, node.col, f"variable '{node.name}' is already declared"
+                node.line, node.col, f"variable '{node.name}' is already declared in this block"
             )
         node.init.accept(self)
         self.check_assignable(node.init, node.type_name, node, f"initialise '{node.name}'")
-        self.symbols[node.name] = node
+        self.scopes[-1][node.name] = node
 
     def visit_assign(self, node):
         decl = self.lookup(node)
@@ -459,6 +466,24 @@ class SemanticChecker:
         node.decl = decl
         node.value.accept(self)
         self.check_assignable(node.value, decl.type_name, node, f"assign to '{node.name}'")
+
+    def visit_if(self, node):
+        self.check_condition(node, "if")
+        node.then_block.accept(self)
+        if node.else_block:
+            node.else_block.accept(self)
+
+    def visit_while(self, node):
+        self.check_condition(node, "while")
+        node.body.accept(self)
+
+    def visit_block(self, node):
+        self.scopes.append({})
+        for statement in node.statements:
+            statement.accept(self)
+        if node.exit:
+            node.exit.accept(self)
+        self.scopes.pop()
 
     def visit_exit(self, node):
         node.value.accept(self)
@@ -473,6 +498,12 @@ class SemanticChecker:
             if (lt == "bool") != (rt == "bool"):
                 raise CompileError(node.line, node.col, f"cannot compare {lt} with {rt}")
             node.type = "bool"
+        return node.type
+
+    def visit_not(self, node):
+        if (have := node.operand.accept(self)) != "bool":
+            raise CompileError(node.line, node.col, f"cannot apply '!' to {have}")
+        node.type = "bool"
         return node.type
 
     def visit_var(self, node):
