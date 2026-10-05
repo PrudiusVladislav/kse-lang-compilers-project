@@ -606,6 +606,19 @@ class CodeGen:
             self.branch_unless_terminated(merge_bb)
         self.builder.position_at_end(merge_bb)
 
+    def visit_while(self, node):
+        cond_bb = self.function.append_basic_block("cond")
+        body_bb = self.function.append_basic_block("body")
+        end_bb = self.function.append_basic_block("end")
+        self.builder.branch(cond_bb)
+
+        self.builder.position_at_end(cond_bb)
+        self.builder.cbranch(node.cond.accept(self), body_bb, end_bb)
+        self.builder.position_at_end(body_bb)
+        node.body.accept(self)
+        self.branch_unless_terminated(cond_bb)
+        self.builder.position_at_end(end_bb)
+
     def visit_block(self, node):
         for statement in node.statements:
             statement.accept(self)
