@@ -1,4 +1,4 @@
-# Practice 4 — types, comparisons and a semantic pass
+# Practice 5 — if/else, scopes and basic blocks
 
 A compiler for a small language of `i32`, `i64` and `bool`. `lexer.py` turns
 source bytes into typed tokens; `Parser` in `compiler.py` reads those tokens and
@@ -7,12 +7,17 @@ expression and rejects bad programs; `CodeGen` walks the checked tree and emits
 LLVM IR through the `llvmlite.ir` builder. `grammar.ebnf` is the grammar the
 parser implements, one method per rule.
 
+This practice adds the first branch. A block brings two things with it that are
+easy to confuse: a scope in the semantic pass and a basic block in the IR.
+Keeping them apart is the week's point — see **Scopes are not basic blocks**.
+
 ## Running
 
 ```sh
 python3 compiler.py input.txt output.ll   # compile
 python3 compiler.py --ast input.txt       # print the tree, write nothing
 lli output.ll                             # run
+opt -passes=mem2reg -S output.ll          # the same IR, allocas promoted
 ```
 
 Or through the full toolchain:
@@ -27,6 +32,9 @@ The lexer can be inspected on its own:
 ```sh
 python3 lexer.py lexer_demo.txt
 ```
+
+Every one of these has a `make` target: `make run`, `make ast`, `make build`,
+`make phi`, `make tokens`, `make tests`, `make check`.
 
 Errors go to stderr as one line with a 1-based `line:column`, and nothing is
 written to the output file:
@@ -46,6 +54,14 @@ parse    tokens -> a tree of Node subclasses        Parser
 check    tree   -> the same tree, typed             SemanticChecker
 walk     tree   -> LLVM IR                          CodeGen
 ```
+
+A statement used to be a line. An `if` is several, so the parser has a line
+cursor beside its token cursor: `parse_statement` consumes one line, or — for an
+`if` — the condition line, the `{` line, every line of the block and the `}`
+line. Braces moved with it. The Practice 2 rule that `{` must close on its line
+is gone from the lexer; `{` and `}` are plain tokens and the parser pairs them,
+which is what lets a block span lines. `i32 x{5` is still an error at the same
+place, now `1:8: expected '}', found end of line`.
 
 The parser is recursive descent, written by hand: `peek`, `eat`, `expect`, and
 one method per grammar rule. One token of look-ahead decides every choice. The
@@ -81,7 +97,46 @@ i64 mut y{10}         declaration, mutable
 bool b{x == y}        == and != give a bool; one comparison per expression
 i64 z{2 + 3 * y}      initialiser: any chain of +, - and * over constants and variables
 y := x * 2 - 1        assignment; only a mut variable may be assigned
-exit y                prints "Program exit with result <value>"; the last line
+bool c{!b}            ! negates a bool
+exit y                prints "Program exit with result <value>"
+```
+
+An `if` and its condition stand on one line; `{`, `}` and `else` stand alone on
+theirs; `else` is optional; a block holds at least one line. Blocks nest, since
+an `if` is a statement. A block may end with `exit` as its last line, and
+nothing follows an `exit` inside the same block.
+
+```
+i32 mut a{10}
+bool b{true}
+if b
+{
+    a := a + 5
+}
+else
+{
+    a := a - 5
+}
+exit a
+```
+
+`!` applies to the factor right after it, so it binds tighter than every
+operator: `!a == b` compares `!a` with `b`. Spaces after `!` are optional, and
+`!=` still lexes as one token — after `!` the machine looks at one byte, `=`
+makes `!=`, anything else makes `!` and is read again. There are still no
+parentheses and no unary minus.
+
+`while` takes the same block:
+
+```
+i32 mut i{1}
+i32 mut sum{0}
+while i != 11
+{
+    sum := sum + i
+    i := i + 1
+}
+exit sum
 ```
 
 `exit` takes a constant, `true`, `false` or a variable, never an operation; a
@@ -98,12 +153,76 @@ or `!` is a lexical error.
 - `== !=` take two integers of any widths or two bools; the result is `bool`.
 - The one conversion is `i32 → i64`, in an initialiser or an assignment. Nothing
   narrows, and a bool never meets an integer.
+- The condition of an `if` or a `while` is a bool, and `!` takes a bool.
 
 `CodeGen` turns every widening the checker allowed into an explicit `sext` via
 one `coerce` helper, called from the initialiser, the assignment, both operands
 of `+ - *`, both operands of `== !=`, and the exit value. Comparisons are
 `icmp` on operands of equal width; integers are printed as `i64` with `%lld`,
 bools by a `select` between two complete format strings.
+
+## Scopes are not basic blocks
+
+A block is one rule in the grammar, one frame in the semantic pass and one
+builder position in the generator, and those three do not line up. The symbol
+table is a stack of frames: a block pushes one on entry and pops it on exit, a
+declaration goes into the top frame, and only the top frame is checked for a
+duplicate — so an outer name may be declared again inside, with any type. A use
+walks the frames from the top down and takes the first hit; a name whose frame
+has been popped is "used before its declaration" like any other unknown name.
+
+```
+i32 mut x{10}
+if true
+{
+    bool mut x{true}
+    if x
+    {
+        i64 mut x{20}
+        exit x
+    }
+    exit x
+}
+exit x
+```
+
+Three `x`, three declarations, three types, three slots. The `exit` in the inner
+block prints 20; the one after it would read the `bool`, and the last line would
+read the `i32`, but neither is reached. Three frames are pushed and popped — the
+two blocks and the global one — while the IR needs five basic blocks: `entry`,
+then a `then` and a `merge` for each `if`. Neither `if` has an `else`, so neither
+gets an `else` block, and `cbranch` goes straight to `merge`.
+
+The counts differ because frames follow braces and basic blocks follow jumps.
+`merge` belongs to no brace, and an `exit` terminates a basic block without
+popping a frame — the `exit x` after the inner `if` is in the outer block's frame
+but in the inner `if`'s `merge` block. Here both merges end up with no
+predecessor, since the arms before them return; a merge with no predecessor is
+still valid IR.
+
+What keeps the two apart in the code is `node.decl`. The semantic pass resolves
+every `Var` and every `Assign` to the declaration it means, and the generator
+reads that field — it never looks a name up, so it never has to know which `x` is
+which.
+
+## Where the allocas go
+
+Every `alloca` goes to the entry block whatever block the builder is in when the
+declaration is met, through one helper that positions at entry, allocates and
+comes back. Two reasons: a slot created inside `then` does not exist on the
+`else` path, and LLVM only promotes entry-block allocas to registers. Shadowing
+costs nothing — two declarations, two slots.
+
+That promotion is worth looking at. For a program that assigns the same variable
+in both arms, `opt -passes=mem2reg -S` drops both stores and starts the merge
+block with a `phi`:
+
+```
+%r.0 = phi i32 [ 1, %then ], [ 2, %else ]
+```
+
+A value that depends on which block control came from. That is SSA, and the
+allocas are what let LLVM build it.
 
 ## Deliberate decisions
 
@@ -117,6 +236,12 @@ rule instead of needing a check of its own. See `tests/err/self_init.txt`.
 only, so `-` is always the binary subtraction operator. `i32 x{-5}` is rejected
 (`tests/err/negative_literal.txt`). Negative *values* are fully supported —
 arithmetic is signed and `exit` prints negative results (`tests/ok/negative.txt`).
+
+**A single `!` is no longer an error.** Through Practice 4 the lexer paired `!`
+with `=` and rejected it alone. Now `!` is an operator of its own, so what was
+`tests/err/single_bang.txt` is a valid program and the file is replaced by
+`tests/err/not_on-int.txt`, which keeps the error path by applying `!` to an
+integer.
 
 **Where an oversized constant is reported.** A bare constant that is too big for
 an `i32` target — `i32 x{3000000000}` or `x := 3000000000` — is reported at the
@@ -139,18 +264,23 @@ a `tests/ok/NAME.ast` exists, the `--ast` dump is compared against it too.
 Everything needed is in the `Dockerfile`:
 
 ```sh
-docker build -t lcd-practice4 .
-docker run --rm -v "$PWD:/work" lcd-practice4 ./run_tests.sh
+docker build -t lcd-practice5 .
+docker run --rm -v "$PWD:/work" lcd-practice5 ./run_tests.sh
 ```
+
+`check.py` runs the same programs and prints one row per test with a pass count
+at the end. `run_tests.sh` is the stricter of the two: it also diffs the `.ast`
+files.
 
 ## Layout
 
 ```
-lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, PAIR
+lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG
 grammar.ebnf    the grammar, one rule per parse method
 compiler.py     the AST classes, the parser, the semantic pass, the codegen walk
-tests/ok/       19 programs that run, 5 of them with expected trees
-tests/err/      35 programs that must fail
+tests/ok/       27 programs that run, some with expected trees
+tests/err/      44 programs that must fail
 run_tests.sh    compiles and runs each test, compares against .expected
+check.py        the same tests as a pass/fail table
 Dockerfile      ubuntu:24.04 with llvm, clang and llvmlite
 ```
