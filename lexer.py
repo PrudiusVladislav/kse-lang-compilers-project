@@ -1,4 +1,4 @@
-START, IDENT, NUMBER, PAIR = "START", "IDENT", "NUMBER", "PAIR"
+START, IDENT, NUMBER, PAIR, BANG = "START", "IDENT", "NUMBER", "PAIR", "BANG"
 
 KEYWORDS = {
     "i32": "kw_i32",
@@ -6,6 +6,9 @@ KEYWORDS = {
     "bool": "kw_bool",
     "mut": "kw_mut",
     "exit": "kw_exit",
+    "if": "kw_if",
+    "else": "kw_else",
+    "while": "kw_while",
     "true": "kw_true",
     "false": "kw_false",
 }
@@ -15,6 +18,9 @@ CATEGORIES = {
     "kw_bool": ("keyword", "typename"),
     "kw_mut": ("keyword", "specifier"),
     "kw_exit": ("keyword", "statement"),
+    "kw_if": ("keyword", "statement"),
+    "kw_else": ("keyword", "statement"),
+    "kw_while": ("keyword", "statement"),
     "kw_true": ("constant", "boolean"),
     "kw_false": ("constant", "boolean"),
     "ident": ("identifier", None),
@@ -27,6 +33,7 @@ CATEGORIES = {
     "star": ("operator", "arithmetic"),
     "eq": ("operator", "comparison"),
     "ne": ("operator", "comparison"),
+    "not": ("operator", "logical"),
     "endline": ("endline", None),
 }
 SINGLES = {
@@ -39,7 +46,6 @@ SINGLES = {
 PAIRS = {
     ord(":"): ("assign", ":=", "':' is not followed by '='"),
     ord("="): ("eq", "==", "expected '==' (a single '=' is not an operator)"),
-    ord("!"): ("ne", "!=", "expected '!=' (a single '!' is not an operator)"),
 }
 
 
@@ -77,7 +83,6 @@ def lex(data):
     lines, tokens = [], []
     state, start, start_col = START, 0, 1
     line, col = 1, 1
-    brace_col = None
     i = 0
 
     while i <= len(data):
@@ -89,10 +94,6 @@ def lex(data):
             elif b in (32, 9):
                 pass
             elif b == 10:
-                if brace_col is not None:
-                    raise CompileError(
-                        line, brace_col, "'{' is not closed before the end of the line"
-                    )
                 tokens.append(Token("endline", "\n", line, col))
                 lines.append(tokens)
                 tokens = []
@@ -103,17 +104,10 @@ def lex(data):
                 state, start, start_col = NUMBER, i, col
             elif b in PAIRS:
                 state, pair, start_col = PAIR, PAIRS[b], col
+            elif b == ord("!"):
+                state, start_col = BANG, col
             elif b in SINGLES:
-                kind = SINGLES[b]
-                if kind == "lbrace":
-                    if brace_col is not None:
-                        raise CompileError(line, col, "'{' inside '{'")
-                    brace_col = col
-                elif kind == "rbrace":
-                    if brace_col is None:
-                        raise CompileError(line, col, "'}' without a matching '{'")
-                    brace_col = None
-                tokens.append(Token(kind, chr(b), line, col))
+                tokens.append(Token(SINGLES[b], chr(b), line, col))
             else:
                 raise CompileError(line, col, f"unexpected byte '{byte_text(b)}'")
 
@@ -136,6 +130,15 @@ def lex(data):
                 state = START
                 continue
 
+        elif state == BANG:
+            if b == ord("="):
+                tokens.append(Token("ne", "!=", line, start_col))
+                state = START
+            else:
+                tokens.append(Token("not", "!", line, start_col))
+                state = START
+                continue
+
         elif state == PAIR:
             kind, text, message = pair
             if b == ord("="):
@@ -147,8 +150,6 @@ def lex(data):
         i += 1
         col += 1
 
-    if brace_col is not None:
-        raise CompileError(line, brace_col, "'{' is not closed before the end of the line")
     if tokens:
         lines.append(tokens)
     return lines

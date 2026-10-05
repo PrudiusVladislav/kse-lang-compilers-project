@@ -93,6 +93,39 @@ class AssignNode(StmtNode):
         return visitor.visit_assign(self)
 
 
+class IfNode(StmtNode):
+    def __init__(self, line, col, cond, then_block, else_block):
+        super().__init__(line, col)
+        self.cond = cond
+        self.then_block = then_block
+        self.else_block = else_block
+
+    def label(self):
+        return "If"
+
+    def children(self):
+        return [self.cond, self.then_block] + ([self.else_block] if self.else_block else [])
+
+    def accept(self, visitor):
+        return visitor.visit_if(self)
+
+
+class WhileNode(StmtNode):
+    def __init__(self, line, col, cond, body):
+        super().__init__(line, col)
+        self.cond = cond
+        self.body = body
+
+    def label(self):
+        return "While"
+
+    def children(self):
+        return [self.cond, self.body]
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
+
+
 class ExitNode(Node):
     def __init__(self, line, col, value):
         super().__init__(line, col)
@@ -106,6 +139,22 @@ class ExitNode(Node):
 
     def accept(self, visitor):
         return visitor.visit_exit(self)
+
+
+class BlockNode(Node):
+    def __init__(self, line, col, statements, exit):
+        super().__init__(line, col)
+        self.statements = statements
+        self.exit = exit
+
+    def label(self):
+        return "Block"
+
+    def children(self):
+        return self.statements + ([self.exit] if self.exit else [])
+
+    def accept(self, visitor):
+        return visitor.visit_block(self)
 
 
 class ExprNode(Node):
@@ -127,6 +176,21 @@ class BinOpNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_binop(self)
+
+
+class NotNode(ExprNode):
+    def __init__(self, line, col, operand):
+        super().__init__(line, col)
+        self.operand = operand
+
+    def label(self):
+        return "Not"
+
+    def children(self):
+        return [self.operand]
+
+    def accept(self, visitor):
+        return visitor.visit_not(self)
 
 
 class VarNode(ExprNode):
@@ -167,9 +231,17 @@ class BoolNode(ExprNode):
 
 class Parser:
     def __init__(self, lines):
-        self.lines = [[t for t in toks if t.kind != "endline"] for toks in lines]
+        self.lines = [toks for toks in ([t for t in l if t.kind != "endline"] for l in lines) if toks]
+        self.line_pos = 0
         self.toks = []
         self.pos = 0
+
+    def peek_line(self):
+        return self.lines[self.line_pos] if self.line_pos < len(self.lines) else None
+
+    def next_line(self):
+        self.toks, self.pos = self.lines[self.line_pos], 0
+        self.line_pos += 1
 
     def peek(self):
         return self.toks[self.pos] if self.pos < len(self.toks) else None
@@ -187,6 +259,10 @@ class Parser:
         return CompileError(
             last.line, last.col + len(last.text), f"{message}, found end of line"
         )
+
+    def end_line(self):
+        if (tok := self.peek()) is not None:
+            raise CompileError(tok.line, tok.col, f"unexpected '{tok.text}' after the statement")
 
     def expect(self, kind, what):
         if self.peek() is None or self.peek().kind != kind:
@@ -208,6 +284,9 @@ class Parser:
         if tok.kind == "ident":
             self.eat()
             return VarNode(tok.line, tok.col, tok.text)
+        if tok.kind == "not":
+            self.eat()
+            return NotNode(tok.line, tok.col, self.parse_factor())
         raise self.error("expected a constant or a variable")
 
     def parse_term(self):
@@ -251,6 +330,45 @@ class Parser:
         self.expect("assign", f"':=' after '{name.text}'")
         return AssignNode(name.line, name.col, name.text, self.parse_expr())
 
+    def parse_block(self, after):
+        if self.peek_line() is not None:
+            self.next_line()
+        brace = self.expect("lbrace", f"'{{' on its own line after '{after}'")
+        self.end_line()
+        statements, exit_node = self.parse_body()
+        toks = self.peek_line()
+        if toks is None:
+            raise CompileError(brace.line, brace.col, "'{' is never closed")
+        if toks[0].kind != "rbrace":
+            raise CompileError(
+                toks[0].line, toks[0].col, "statement after 'exit' in the same block"
+            )
+        if not statements and exit_node is None:
+            raise CompileError(brace.line, brace.col, "empty block")
+        self.next_line()
+        self.eat()
+        self.end_line()
+        return BlockNode(brace.line, brace.col, statements, exit_node)
+
+    def parse_if(self):
+        tok = self.eat()
+        cond = self.parse_expr()
+        self.end_line()
+        then_block = self.parse_block("if")
+        else_block = None
+        if (toks := self.peek_line()) is not None and toks[0].kind == "kw_else":
+            self.next_line()
+            self.eat()
+            self.end_line()
+            else_block = self.parse_block("else")
+        return IfNode(tok.line, tok.col, cond, then_block, else_block)
+
+    def parse_while(self):
+        tok = self.eat()
+        cond = self.parse_expr()
+        self.end_line()
+        return WhileNode(tok.line, tok.col, cond, self.parse_block("while"))
+
     def parse_exit(self):
         tok = self.eat()
         return ExitNode(tok.line, tok.col, self.parse_factor())
@@ -261,26 +379,33 @@ class Parser:
             return self.parse_decl()
         if tok.kind == "ident":
             return self.parse_assign()
+        if tok.kind == "kw_if":
+            return self.parse_if()
+        if tok.kind == "kw_while":
+            return self.parse_while()
+        if tok.kind == "kw_else":
+            raise CompileError(tok.line, tok.col, "'else' without an 'if'")
         raise CompileError(tok.line, tok.col, f"'{tok.text}' does not start a statement")
 
-    def parse_program(self):
+    def parse_body(self):
         statements, exit_node = [], None
-        for toks in self.lines:
-            if not toks:
-                continue
-            self.toks, self.pos = toks, 0
-            if exit_node is not None:
-                tok = self.peek()
-                raise CompileError(tok.line, tok.col, "'exit' must be the last statement")
-            if self.peek().kind == "kw_exit":
-                exit_node = self.parse_exit()
-            else:
-                statements.append(self.parse_statement())
-            if self.peek() is not None:
-                tok = self.peek()
-                raise CompileError(
-                    tok.line, tok.col, f"unexpected '{tok.text}' after the statement"
-                )
+        while (toks := self.peek_line()) is not None and toks[0].kind not in ("kw_exit", "rbrace"):
+            self.next_line()
+            statements.append(self.parse_statement())
+            self.end_line()
+        if toks is not None and toks[0].kind == "kw_exit":
+            self.next_line()
+            exit_node = self.parse_exit()
+            self.end_line()
+        return statements, exit_node
+
+    def parse_program(self):
+        statements, exit_node = self.parse_body()
+        if (toks := self.peek_line()) is not None:
+            tok = toks[0]
+            if tok.kind == "rbrace":
+                raise CompileError(tok.line, tok.col, "'}' without a matching '{'")
+            raise CompileError(tok.line, tok.col, "'exit' must be the last statement")
 
         if exit_node is None:
             if not statements:
@@ -292,14 +417,21 @@ class Parser:
 
 class SemanticChecker:
     def __init__(self):
-        self.symbols = {}
+        self.scopes = [{}]
 
     def lookup(self, node):
-        if node.name not in self.symbols:
+        for frame in reversed(self.scopes):
+            if node.name in frame:
+                return frame[node.name]
+        raise CompileError(
+            node.line, node.col, f"variable '{node.name}' is used before its declaration"
+        )
+
+    def check_condition(self, node, keyword):
+        if (have := node.cond.accept(self)) != "bool":
             raise CompileError(
-                node.line, node.col, f"variable '{node.name}' is used before its declaration"
+                node.line, node.col, f"the condition of '{keyword}' must be bool, got {have}"
             )
-        return self.symbols[node.name]
 
     def check_assignable(self, expr, want, at, what):
         have = expr.type
@@ -317,13 +449,13 @@ class SemanticChecker:
         node.exit.accept(self)
 
     def visit_decl(self, node):
-        if node.name in self.symbols:
+        if node.name in self.scopes[-1]:
             raise CompileError(
-                node.line, node.col, f"variable '{node.name}' is already declared"
+                node.line, node.col, f"variable '{node.name}' is already declared in this block"
             )
         node.init.accept(self)
         self.check_assignable(node.init, node.type_name, node, f"initialise '{node.name}'")
-        self.symbols[node.name] = node
+        self.scopes[-1][node.name] = node
 
     def visit_assign(self, node):
         decl = self.lookup(node)
@@ -334,6 +466,24 @@ class SemanticChecker:
         node.decl = decl
         node.value.accept(self)
         self.check_assignable(node.value, decl.type_name, node, f"assign to '{node.name}'")
+
+    def visit_if(self, node):
+        self.check_condition(node, "if")
+        node.then_block.accept(self)
+        if node.else_block:
+            node.else_block.accept(self)
+
+    def visit_while(self, node):
+        self.check_condition(node, "while")
+        node.body.accept(self)
+
+    def visit_block(self, node):
+        self.scopes.append({})
+        for statement in node.statements:
+            statement.accept(self)
+        if node.exit:
+            node.exit.accept(self)
+        self.scopes.pop()
 
     def visit_exit(self, node):
         node.value.accept(self)
@@ -348,6 +498,12 @@ class SemanticChecker:
             if (lt == "bool") != (rt == "bool"):
                 raise CompileError(node.line, node.col, f"cannot compare {lt} with {rt}")
             node.type = "bool"
+        return node.type
+
+    def visit_not(self, node):
+        if (have := node.operand.accept(self)) != "bool":
+            raise CompileError(node.line, node.col, f"cannot apply '!' to {have}")
+        node.type = "bool"
         return node.type
 
     def visit_var(self, node):
@@ -368,11 +524,11 @@ class SemanticChecker:
 
 class CodeGen:
     def __init__(self):
-        self.module = ir.Module(name="practice4")
+        self.module = ir.Module(name="practice5")
         self.module.triple = llvm.get_default_triple()
 
-        main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
-        self.builder = ir.IRBuilder(main.append_basic_block("entry"))
+        self.function = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
+        self.builder = ir.IRBuilder(self.function.append_basic_block("entry"))
         self.printf = ir.Function(
             self.module,
             ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True),
@@ -386,16 +542,22 @@ class CodeGen:
             "*": self.builder.mul,
         }
 
+    def alloca_entry(self, type, name):
+        with self.builder.goto_entry_block():
+            return self.builder.alloca(type, name=name)
+
     def coerce(self, value, have, want):
         if have == "i32" and want == "i64":
             return self.builder.sext(value, I64, name="wide")
         return value
 
     def global_string(self, name, data):
-        text_type = ir.ArrayType(I8, len(data))
-        text = ir.GlobalVariable(self.module, text_type, name=name)
-        text.linkage, text.global_constant = "private", True
-        text.initializer = ir.Constant(text_type, bytearray(data))
+        text = self.module.globals.get(name)
+        if text is None:
+            text_type = ir.ArrayType(I8, len(data))
+            text = ir.GlobalVariable(self.module, text_type, name=name)
+            text.linkage, text.global_constant = "private", True
+            text.initializer = ir.Constant(text_type, bytearray(data))
         return text.bitcast(ir.PointerType(I8))
 
     def print_int(self, value):
@@ -417,13 +579,51 @@ class CodeGen:
 
     def visit_decl(self, node):
         value = self.coerce(node.init.accept(self), node.init.type, node.type_name)
-        slot = self.builder.alloca(IR_TYPES[node.type_name], name=node.name)
+        slot = self.alloca_entry(IR_TYPES[node.type_name], node.name)
         self.builder.store(value, slot)
         self.slots[node] = slot
 
     def visit_assign(self, node):
         value = self.coerce(node.value.accept(self), node.value.type, node.decl.type_name)
         self.builder.store(value, self.slots[node.decl])
+
+    def branch_unless_terminated(self, target):
+        if not self.builder.block.is_terminated:
+            self.builder.branch(target)
+
+    def visit_if(self, node):
+        then_bb = self.function.append_basic_block("then")
+        else_bb = self.function.append_basic_block("else") if node.else_block else None
+        merge_bb = self.function.append_basic_block("merge")
+        self.builder.cbranch(node.cond.accept(self), then_bb, else_bb or merge_bb)
+
+        self.builder.position_at_end(then_bb)
+        node.then_block.accept(self)
+        self.branch_unless_terminated(merge_bb)
+        if else_bb:
+            self.builder.position_at_end(else_bb)
+            node.else_block.accept(self)
+            self.branch_unless_terminated(merge_bb)
+        self.builder.position_at_end(merge_bb)
+
+    def visit_while(self, node):
+        cond_bb = self.function.append_basic_block("cond")
+        body_bb = self.function.append_basic_block("body")
+        end_bb = self.function.append_basic_block("end")
+        self.builder.branch(cond_bb)
+
+        self.builder.position_at_end(cond_bb)
+        self.builder.cbranch(node.cond.accept(self), body_bb, end_bb)
+        self.builder.position_at_end(body_bb)
+        node.body.accept(self)
+        self.branch_unless_terminated(cond_bb)
+        self.builder.position_at_end(end_bb)
+
+    def visit_block(self, node):
+        for statement in node.statements:
+            statement.accept(self)
+        if node.exit:
+            node.exit.accept(self)
 
     def visit_exit(self, node):
         value = node.value.accept(self)
@@ -440,6 +640,9 @@ class CodeGen:
         if node.op in "+-*":
             return self.emit[node.op](left, right)
         return self.builder.icmp_signed(node.op, left, right)
+
+    def visit_not(self, node):
+        return self.builder.xor(node.operand.accept(self), ir.Constant(I1, True))
 
     def visit_var(self, node):
         return self.builder.load(self.slots[node.decl])
