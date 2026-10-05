@@ -188,10 +188,11 @@ exit x
 
 Three `x`, three declarations, three types, three slots. The `exit` in the inner
 block prints 20; the one after it would read the `bool`, and the last line would
-read the `i32`, but neither is reached. Three frames are pushed and popped — the
-two blocks and the global one — while the IR needs five basic blocks: `entry`,
-then a `then` and a `merge` for each `if`. Neither `if` has an `else`, so neither
-gets an `else` block, and `cbranch` goes straight to `merge`.
+read the `i32`, but neither is reached. Three frames are live at the deepest
+point — the global one the checker starts with and one per block — while the IR
+needs five basic blocks: `entry`, then a `then` and a `merge` for each `if`.
+Neither `if` has an `else`, so neither gets one, and `cbranch` goes straight to
+`merge`.
 
 The counts differ because frames follow braces and basic blocks follow jumps.
 `merge` belongs to no brace, and an `exit` terminates a basic block without
@@ -199,6 +200,18 @@ popping a frame — the `exit x` after the inner `if` is in the outer block's fr
 but in the inner `if`'s `merge` block. Here both merges end up with no
 predecessor, since the arms before them return; a merge with no predecessor is
 still valid IR.
+
+`tests/ok/scope_shadow-type.txt` is that program, and this is what it compiles
+to — three slots in `entry`, one per declaration, and five blocks each ending
+once:
+
+```
+entry:     %x = alloca i32 · %x.1 = alloca i1 · %x.2 = alloca i64   br i1 true
+then:      stores the bool x, loads it as the inner condition        br i1
+merge:     reads the i32 x — the last line                           ret
+then.1:    reads the i64 x, prints 20                                ret
+merge.1:   reads the i1 x through a select                           ret
+```
 
 What keeps the two apart in the code is `node.decl`. The semantic pass resolves
 every `Var` and every `Assign` to the declaration it means, and the generator
@@ -218,11 +231,13 @@ in both arms, `opt -passes=mem2reg -S` drops both stores and starts the merge
 block with a `phi`:
 
 ```
-%r.0 = phi i32 [ 1, %then ], [ 2, %else ]
+merge:                              ; preds = %else, %then
+  %r.0 = phi i32 [ 1, %then ], [ 2, %else ]
 ```
 
 A value that depends on which block control came from. That is SSA, and the
-allocas are what let LLVM build it.
+allocas are what let LLVM build it. `tests/ok/if-else_both-arms-assign.txt` is
+the program; `make phi` is the demo.
 
 ## Deliberate decisions
 
@@ -278,7 +293,7 @@ files.
 lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG
 grammar.ebnf    the grammar, one rule per parse method
 compiler.py     the AST classes, the parser, the semantic pass, the codegen walk
-tests/ok/       27 programs that run, some with expected trees
+tests/ok/       27 programs that run, 10 of them with expected trees
 tests/err/      44 programs that must fail
 run_tests.sh    compiles and runs each test, compares against .expected
 check.py        the same tests as a pass/fail table
