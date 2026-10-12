@@ -331,8 +331,12 @@ class Parser:
         return AssignNode(name.line, name.col, name.text, self.parse_expr())
 
     def parse_block(self, after):
-        if self.peek_line() is not None:
-            self.next_line()
+        if self.peek_line() is None:
+            last = self.lines[-1][-1]
+            raise CompileError(
+                last.line + 1, 1, f"expected '{{' on its own line after '{after}', found end of file"
+            )
+        self.next_line()
         brace = self.expect("lbrace", f"'{{' on its own line after '{after}'")
         self.end_line()
         statements, exit_node = self.parse_body()

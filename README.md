@@ -44,7 +44,10 @@ compilation error: line 2:5: cannot initialise 'c' of type i32 with a value of t
 ```
 
 When a line ends too early the column is the one right after its last token —
-`x := x +` reports `2:9`, the place where something should have been typed.
+`x := x +` reports `2:9`, the place where something should have been typed. When
+the whole file ends too early the message says end of file instead, at column 1
+of the line after the last one: a file whose last line is `else` is missing a
+block, so it reports `7:1` for an `else` on line 6.
 
 ## The phases
 
@@ -294,7 +297,7 @@ lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG
 grammar.ebnf    the grammar, one rule per parse method
 compiler.py     the AST classes, the parser, the semantic pass, the codegen walk
 tests/ok/       27 programs that run, 10 of them with expected trees
-tests/err/      44 programs that must fail
+tests/err/      45 programs that must fail
 run_tests.sh    compiles and runs each test, compares against .expected
 check.py        the same tests as a pass/fail table
 Dockerfile      ubuntu:24.04 with llvm, clang and llvmlite
