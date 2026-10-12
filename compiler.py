@@ -132,10 +132,6 @@ class DeclNode(StmtNode):
         self.values = values
         self.brace = brace
 
-    @property
-    def init(self):
-        return self.values[0]
-
     def label(self):
         return f"Decl {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
 
@@ -665,6 +661,9 @@ class Parser:
 class SemanticChecker:
     def __init__(self):
         self.scopes = [{}]
+        self.structs = {}
+        self.funcs = {}
+        self.current_fn = None
 
     def lookup(self, node):
         for frame in reversed(self.scopes):
@@ -673,6 +672,10 @@ class SemanticChecker:
         raise CompileError(
             node.line, node.col, f"variable '{node.name}' is used before its declaration"
         )
+
+    def check_type(self, type_name, at, what):
+        if type_name not in IR_TYPES and type_name not in self.structs:
+            raise CompileError(at.line, at.col, f"unknown type '{type_name}' for {what}")
 
     def check_condition(self, node, keyword):
         if (have := node.cond.accept(self)) != "bool":
@@ -690,29 +693,120 @@ class SemanticChecker:
             at.line, at.col, f"cannot {what} of type {want} with a value of type {have}"
         )
 
+    def check_fields(self, values, want, brace):
+        if want not in self.structs:
+            raise CompileError(brace.line, brace.col, f"{{}} cannot initialise a value of type {want}")
+        fields = self.structs[want].fields
+        if len(values) != len(fields):
+            raise CompileError(
+                brace.line, brace.col, f"{want} takes {len(fields)} values in {{}}, got {len(values)}"
+            )
+        for value, field in zip(values, fields):
+            if isinstance(value, InitNode):
+                value.type = field.type_name
+                value.field_types = self.check_fields(value.values, field.type_name, value)
+            else:
+                value.accept(self)
+                self.check_assignable(value, field.type_name, value, f"initialise field '{field.name}'")
+        return [field.type_name for field in fields]
+
+    def const_field(self, struct):
+        for field in struct.fields:
+            if not field.mutable:
+                return field.name
+            if field.type_name in self.structs and (inner := self.structs[field.type_name].const_field):
+                return f"{field.name}.{inner}"
+        return None
+
+    def walk(self, type_name, path):
+        fields = []
+        for tok in path:
+            struct = self.structs.get(type_name)
+            if struct is None or tok.text not in struct.by_name:
+                raise CompileError(tok.line, tok.col, f"{type_name} has no field '{tok.text}'")
+            fields.append(struct.by_name[tok.text])
+            type_name = fields[-1].type_name
+        return fields
+
+    def collect(self, program):
+        for struct in program.structs:
+            if struct.name in self.structs:
+                raise CompileError(struct.line, struct.col, f"struct '{struct.name}' is already declared")
+            struct.by_name = {}
+            for index, field in enumerate(struct.fields):
+                if field.name in struct.by_name:
+                    raise CompileError(
+                        field.line, field.col, f"field '{field.name}' is already declared in '{struct.name}'"
+                    )
+                self.check_type(field.type_name, field, f"field '{field.name}'")
+                field.index = index
+                struct.by_name[field.name] = field
+            struct.const_field = self.const_field(struct)
+            self.structs[struct.name] = struct
+
+        for fn in program.functions:
+            if fn.name in self.funcs:
+                raise CompileError(fn.line, fn.col, f"function '{fn.name}' is already declared")
+            self.check_type(fn.result_type, fn, f"the result of '{fn.name}'")
+            seen = set()
+            for param in fn.params:
+                if param.name in seen:
+                    raise CompileError(param.line, param.col, f"parameter '{param.name}' is declared twice")
+                self.check_type(param.type_name, param, f"parameter '{param.name}'")
+                seen.add(param.name)
+            self.funcs[fn.name] = fn
+
     def visit_program(self, node):
+        self.collect(node)
+        for fn in node.functions:
+            fn.accept(self)
         for statement in node.statements:
             statement.accept(self)
         node.exit.accept(self)
+
+    def visit_fn(self, node):
+        self.current_fn, self.scopes = node, [{p.name: p for p in node.params}]
+        for statement in node.body.statements:
+            statement.accept(self)
+        node.body.exit.accept(self)
+        self.current_fn, self.scopes = None, [{}]
 
     def visit_decl(self, node):
         if node.name in self.scopes[-1]:
             raise CompileError(
                 node.line, node.col, f"variable '{node.name}' is already declared in this block"
             )
-        node.init.accept(self)
-        self.check_assignable(node.init, node.type_name, node, f"initialise '{node.name}'")
+        self.check_type(node.type_name, node, f"variable '{node.name}'")
+        first = node.values[0]
+        node.field_types = None
+        if len(node.values) == 1 and not isinstance(first, InitNode) and (
+            node.type_name in IR_TYPES or first.accept(self) == node.type_name
+        ):
+            first.accept(self)
+            self.check_assignable(first, node.type_name, node, f"initialise '{node.name}'")
+        else:
+            node.field_types = self.check_fields(node.values, node.type_name, node.brace)
         self.scopes[-1][node.name] = node
 
     def visit_assign(self, node):
-        decl = self.lookup(node)
-        if not decl.mutable:
+        node.decl = self.lookup(node)
+        fields = self.walk(node.decl.type_name, node.path)
+        target = ".".join([node.name] + [tok.text for tok in node.path])
+        if not node.decl.mutable:
+            raise CompileError(node.line, node.col, f"cannot assign to '{target}': it is not mut")
+        for tok, field in zip(node.path, fields):
+            if not field.mutable:
+                raise CompileError(
+                    tok.line, tok.col, f"cannot assign to '{target}': '{tok.text}' is not mut"
+                )
+        node.indices = [field.index for field in fields]
+        node.type = fields[-1].type_name if fields else node.decl.type_name
+        if node.type in self.structs and (const := self.structs[node.type].const_field):
             raise CompileError(
-                node.line, node.col, f"cannot assign to '{node.name}': it is not mut"
+                node.line, node.col, f"cannot assign to '{target}': its field '{const}' is not mut"
             )
-        node.decl = decl
         node.value.accept(self)
-        self.check_assignable(node.value, decl.type_name, node, f"assign to '{node.name}'")
+        self.check_assignable(node.value, node.type, node, f"assign to '{target}'")
 
     def visit_if(self, node):
         self.check_condition(node, "if")
@@ -733,13 +827,23 @@ class SemanticChecker:
         self.scopes.pop()
 
     def visit_exit(self, node):
-        node.value.accept(self)
+        node.fn = self.current_fn
+        have = node.value.accept(self)
+        if node.fn:
+            self.check_assignable(
+                node.value, node.fn.result_type, node.value, f"exit from '{node.fn.name}'"
+            )
+        elif have not in IR_TYPES:
+            raise CompileError(
+                node.value.line, node.value.col, f"the program cannot exit with a value of type {have}"
+            )
 
     def visit_binop(self, node):
         lt, rt = node.left.accept(self), node.right.accept(self)
+        for t in (lt, rt):
+            if t not in IR_TYPES or (t == "bool" and node.op in "+-*"):
+                raise CompileError(node.line, node.col, f"cannot apply '{node.op}' to {t}")
         if node.op in "+-*":
-            if "bool" in (lt, rt):
-                raise CompileError(node.line, node.col, f"cannot apply '{node.op}' to bool")
             node.type = wider(lt, rt)
         else:
             if (lt == "bool") != (rt == "bool"):
@@ -758,6 +862,28 @@ class SemanticChecker:
         node.type = node.decl.type_name
         return node.type
 
+    def visit_field_access(self, node):
+        node.decl = self.lookup(node)
+        fields = self.walk(node.decl.type_name, node.path)
+        node.indices = [field.index for field in fields]
+        node.type = fields[-1].type_name
+        return node.type
+
+    def visit_call(self, node):
+        node.fn = self.funcs.get(node.name)
+        if node.fn is None:
+            raise CompileError(node.line, node.col, f"function '{node.name}' is not declared")
+        if len(node.args) != len(node.fn.params):
+            raise CompileError(
+                node.line, node.col,
+                f"'{node.name}' takes {len(node.fn.params)} arguments, got {len(node.args)}",
+            )
+        for arg, param in zip(node.args, node.fn.params):
+            arg.accept(self)
+            self.check_assignable(arg, param.type_name, arg, f"initialise parameter '{param.name}'")
+        node.type = node.fn.result_type
+        return node.type
+
     def visit_const(self, node):
         if node.value > I64_MAX:
             raise CompileError(node.line, node.col, f"constant {node.value} does not fit in i64")
@@ -771,27 +897,32 @@ class SemanticChecker:
 
 class CodeGen:
     def __init__(self):
-        self.module = ir.Module(name="practice5")
+        self.module = ir.Module(name="practice6")
         self.module.triple = llvm.get_default_triple()
-
-        self.function = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
-        self.builder = ir.IRBuilder(self.function.append_basic_block("entry"))
         self.printf = ir.Function(
             self.module,
             ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True),
             name="printf",
         )
+        self.structs = {}
+        self.functions = {}
 
+    def enter_function(self, function):
+        self.function = function
+        self.builder = ir.IRBuilder(function.append_basic_block("entry"))
         self.slots = {}
-        self.emit = {
-            "+": self.builder.add,
-            "-": self.builder.sub,
-            "*": self.builder.mul,
-        }
+
+    def ir_type(self, type_name):
+        return IR_TYPES[type_name] if type_name in IR_TYPES else self.structs[type_name]
 
     def alloca_entry(self, type, name):
         with self.builder.goto_entry_block():
             return self.builder.alloca(type, name=name)
+
+    def field_ptr(self, slot, indices):
+        if not indices:
+            return slot
+        return self.builder.gep(slot, [ir.Constant(I32, i) for i in [0] + indices], inbounds=True)
 
     def coerce(self, value, have, want):
         if have == "i32" and want == "i64":
@@ -819,20 +950,45 @@ class CodeGen:
         self.builder.call(self.printf, [fmt])
 
     def visit_program(self, node):
+        for struct in node.structs:
+            self.structs[struct.name] = self.module.context.get_identified_type(struct.name)
+            self.structs[struct.name].set_body(*[self.ir_type(f.type_name) for f in struct.fields])
+        for fn in node.functions:
+            fn_type = ir.FunctionType(
+                self.ir_type(fn.result_type), [self.ir_type(p.type_name) for p in fn.params]
+            )
+            self.functions[fn] = ir.Function(self.module, fn_type, name=f"fn_{fn.name}")
+        for fn in node.functions:
+            fn.accept(self)
+
+        self.enter_function(ir.Function(self.module, ir.FunctionType(I32, []), name="main"))
         for statement in node.statements:
             statement.accept(self)
         node.exit.accept(self)
         return self.module
 
+    def visit_fn(self, node):
+        self.enter_function(self.functions[node])
+        for param, arg in zip(node.params, self.function.args):
+            arg.name = param.name
+            self.slots[param] = self.alloca_entry(arg.type, param.name)
+            self.builder.store(arg, self.slots[param])
+        node.body.accept(self)
+
     def visit_decl(self, node):
-        value = self.coerce(node.init.accept(self), node.init.type, node.type_name)
-        slot = self.alloca_entry(IR_TYPES[node.type_name], node.name)
-        self.builder.store(value, slot)
+        slot = self.alloca_entry(self.ir_type(node.type_name), node.name)
+        if node.field_types is None:
+            value = node.values[0]
+            self.builder.store(self.coerce(value.accept(self), value.type, node.type_name), slot)
+        else:
+            for index, (value, want) in enumerate(zip(node.values, node.field_types)):
+                ptr = self.field_ptr(slot, [index])
+                self.builder.store(self.coerce(value.accept(self), value.type, want), ptr)
         self.slots[node] = slot
 
     def visit_assign(self, node):
-        value = self.coerce(node.value.accept(self), node.value.type, node.decl.type_name)
-        self.builder.store(value, self.slots[node.decl])
+        value = self.coerce(node.value.accept(self), node.value.type, node.type)
+        self.builder.store(value, self.field_ptr(self.slots[node.decl], node.indices))
 
     def branch_unless_terminated(self, target):
         if not self.builder.block.is_terminated:
@@ -874,6 +1030,9 @@ class CodeGen:
 
     def visit_exit(self, node):
         value = node.value.accept(self)
+        if node.fn:
+            self.builder.ret(self.coerce(value, node.value.type, node.fn.result_type))
+            return
         if node.value.type == "bool":
             self.print_bool(value)
         else:
@@ -884,8 +1043,12 @@ class CodeGen:
         want = wider(node.left.type, node.right.type)
         left = self.coerce(node.left.accept(self), node.left.type, want)
         right = self.coerce(node.right.accept(self), node.right.type, want)
-        if node.op in "+-*":
-            return self.emit[node.op](left, right)
+        if node.op == "+":
+            return self.builder.add(left, right)
+        if node.op == "-":
+            return self.builder.sub(left, right)
+        if node.op == "*":
+            return self.builder.mul(left, right)
         return self.builder.icmp_signed(node.op, left, right)
 
     def visit_not(self, node):
@@ -893,6 +1056,16 @@ class CodeGen:
 
     def visit_var(self, node):
         return self.builder.load(self.slots[node.decl])
+
+    def visit_field_access(self, node):
+        return self.builder.load(self.field_ptr(self.slots[node.decl], node.indices))
+
+    def visit_call(self, node):
+        args = [
+            self.coerce(arg.accept(self), arg.type, param.type_name)
+            for arg, param in zip(node.args, node.fn.params)
+        ]
+        return self.builder.call(self.functions[node.fn], args)
 
     def visit_const(self, node):
         return ir.Constant(IR_TYPES[node.type], node.value)
