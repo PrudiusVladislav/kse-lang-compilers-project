@@ -1,8 +1,18 @@
-(* The language in EBNF, with the Practice 5 branches, blocks and '!'.
+(* The language in EBNF, with the Practice 6 structs and functions.
    Quoted words are terminals: tokens the lexer emits, with the same text.
    ident and number are terminals too; how they are spelled is lexer.py's rule. *)
 
-program    ::= { statement } exit_stmt
+program    ::= { struct } { fn } { statement } exit_stmt
+
+struct     ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
+
+field_decl ::= type [ "mut" ] ident NL
+
+fn         ::= "fn" ident ":=" "(" [ param { "," param } ] ")" "->" type NL fn_body
+
+param      ::= type ident
+
+fn_body    ::= "{" NL { statement } exit_stmt NL "}" NL
 
 statement  ::= decl | assign | if | while
 
@@ -12,11 +22,13 @@ while      ::= "while" expr NL block
 
 block      ::= "{" NL { statement } [ exit_stmt NL ] "}" NL
 
-decl       ::= type [ "mut" ] ident "{" expr "}"
+decl       ::= type [ "mut" ] ident "{" value { "," value } "}"
 
-type       ::= "i32" | "i64" | "bool"
+value      ::= "{" value { "," value } "}" | expr
 
-assign     ::= ident ":=" expr
+type       ::= "i32" | "i64" | "bool" | ident
+
+assign     ::= ident { "." ident } ":=" expr
 
 exit_stmt  ::= "exit" factor
 
@@ -26,7 +38,11 @@ arith      ::= term { ( "+" | "-" ) term }
 
 term       ::= factor { "*" factor }
 
-factor     ::= number | "true" | "false" | ident | "!" factor
+factor     ::= number | "true" | "false" | ident | field | call | "!" factor
+
+field      ::= ident "." ident { "." ident }
+
+call       ::= ident "(" [ expr { "," expr } ] ")"
 
 
 (* Line structure is lexical: the lexer gives one token vector per line, the
@@ -44,6 +60,27 @@ factor     ::= number | "true" | "false" | ident | "!" factor
    the same place, but it is expect('}') that reports it at the end of the line
    rather than a lexer that refused to let '{' outlive its line. *)
 
+(* program fixes the order the same way it fixes exit: three repetitions one
+   after another, so parse_program is three loops. A struct or fn keyword met
+   once its loop is over lands in parse_statement, which rejects it at that
+   line. fn_body is block with exit_stmt no longer optional, and only the body
+   itself: an if inside a function keeps the ordinary block. struct and fn are
+   not statements, so a block can never hold one; parse_statement says so in
+   a function body with a message of its own.
+
+   decl and assign may both start with ident now that a type can be a struct
+   name. One token of look-ahead still decides: ident ident or ident mut is a
+   decl, ident "(" is a call standing alone and is rejected, anything else is
+   an assign. The parser never learns which names are types; Foo p{1} parses,
+   and the unknown type is the semantic pass's error.
+
+   A call and a variable never collide: ident "(" is a call, a bare ident is a
+   variable, so functions and variables live in separate namespaces.
+
+   value is the only place '{' opens an expression list. It is not a factor,
+   so {} nests inside a decl's {} and nowhere else, and parentheses exist only
+   in call: there is still no grouping and no unary minus. *)
+
 (* expr allows at most one comparison, and it binds weaker than arithmetic:
    the second arith is the only place "==" or "!=" can appear, so a second
    comparison is left over after the expression and rejected there.
@@ -51,7 +88,9 @@ factor     ::= number | "true" | "false" | ident | "!" factor
    Types are not in the grammar: i32 a{true} parses. Left out on purpose,
    checked in the semantic pass: declared before use, declared once, mut
    before :=, and the type rules. A bool condition and a bool under '!' are
-   two more of the same kind.
+   two more of the same kind, and so are the struct rules: one value per
+   field, every link of a chain a field of the struct before it, mut on every
+   link of a write, a struct used only below its own declaration.
 
    '!' is in factor and recurses on factor, so it binds tighter than every
    operator: !a == b compares !a with b, and !!a is a factor twice over.

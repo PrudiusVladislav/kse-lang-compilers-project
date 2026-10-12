@@ -1,4 +1,4 @@
-IMAGE := lcd-practice5
+IMAGE := lcd-practice6
 DOCKER := docker run --rm $(if $(shell test -t 0 && echo y),-it) -v "$(CURDIR)":/work -w /work $(IMAGE)
 
 .PHONY: image shell tokens ast run build phi tests check clean
