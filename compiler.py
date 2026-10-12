@@ -1067,6 +1067,12 @@ class CodeGen:
         ]
         return self.builder.call(self.functions[node.fn], args)
 
+    def visit_init(self, node):
+        value = ir.Constant(self.ir_type(node.type), ir.Undefined)
+        for index, (field, want) in enumerate(zip(node.values, node.field_types)):
+            value = self.builder.insert_value(value, self.coerce(field.accept(self), field.type, want), index)
+        return value
+
     def visit_const(self, node):
         return ir.Constant(IR_TYPES[node.type], node.value)
 
