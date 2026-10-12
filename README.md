@@ -14,8 +14,8 @@ Keeping them apart is the week's point — see **Scopes are not basic blocks**.
 ## Running
 
 ```sh
-python3 compiler.py input.txt output.ll   # compile
-python3 compiler.py --ast input.txt       # print the tree, write nothing
+python3 src/compiler.py input.txt output.ll   # compile
+python3 src/compiler.py --ast input.txt       # print the tree, write nothing
 lli output.ll                             # run
 opt -passes=mem2reg -S output.ll          # the same IR, allocas promoted
 ```
@@ -30,7 +30,7 @@ clang -fPIE output.o -o program && ./program
 The lexer can be inspected on its own:
 
 ```sh
-python3 lexer.py lexer_demo.txt
+python3 src/lexer.py lexer_demo.txt
 ```
 
 Every one of these has a `make` target: `make run`, `make ast`, `make build`,
@@ -52,7 +52,7 @@ block, so it reports `7:1` for an `else` on line 6.
 ## The phases
 
 ```
-lex      bytes  -> one token vector per line        lexer.py
+lex      bytes  -> one token vector per line        src/lexer.py
 parse    tokens -> a tree of Node subclasses        Parser
 check    tree   -> the same tree, typed             SemanticChecker
 walk     tree   -> LLVM IR                          CodeGen
@@ -293,9 +293,9 @@ files.
 ## Layout
 
 ```
-lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG
+src/lexer.py    byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG
 grammar.ebnf    the grammar, one rule per parse method
-compiler.py     the AST classes, the parser, the semantic pass, the codegen walk
+src/compiler.py the AST classes, the parser, the semantic pass, the codegen walk
 tests/ok/       27 programs that run, 10 of them with expected trees
 tests/err/      45 programs that must fail
 run_tests.sh    compiles and runs each test, compares against .expected

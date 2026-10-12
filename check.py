@@ -10,7 +10,7 @@ def run(src):
     out.unlink(missing_ok=True)
     expected = src.with_suffix(".expected").read_text().rstrip("\n")
     compiled = subprocess.run(
-        [sys.executable, "compiler.py", str(src), str(out)],
+        [sys.executable, "src/compiler.py", str(src), str(out)],
         cwd=ROOT, capture_output=True, text=True,
     )
 
