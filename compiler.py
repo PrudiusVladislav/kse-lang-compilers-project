@@ -383,6 +383,25 @@ class Parser:
             raise self.error(f"expected {what}")
         return self.eat()
 
+    def parse_path(self):
+        path = []
+        while (tok := self.peek()) is not None and tok.kind == "dot":
+            self.eat()
+            path.append(self.expect("ident", "a field name after '.'"))
+        return path
+
+    def parse_args(self):
+        self.eat()
+        args = []
+        if self.peek() is not None and self.peek().kind != "rparen":
+            while True:
+                args.append(self.parse_expr())
+                if self.peek() is None or self.peek().kind != "comma":
+                    break
+                self.eat()
+        self.expect("rparen", "')' after the arguments")
+        return args
+
     def parse_factor(self):
         tok = self.peek()
         if tok is None:
@@ -397,6 +416,11 @@ class Parser:
             return BoolNode(tok.line, tok.col, BOOLS[tok.kind])
         if tok.kind == "ident":
             self.eat()
+            nxt = self.peek()
+            if nxt is not None and nxt.kind == "lparen":
+                return CallNode(tok.line, tok.col, tok.text, self.parse_args())
+            if nxt is not None and nxt.kind == "dot":
+                return FieldAccessNode(tok.line, tok.col, tok.text, self.parse_path())
             return VarNode(tok.line, tok.col, tok.text)
         if tok.kind == "not":
             self.eat()
@@ -424,8 +448,19 @@ class Parser:
             node = BinOpNode(tok.line, tok.col, CMP_OPS[tok.kind], node, self.parse_arith())
         return node
 
+    def parse_value(self):
+        if (tok := self.peek()) is not None and tok.kind == "lbrace":
+            self.eat()
+            values = [self.parse_value()]
+            while (nxt := self.peek()) is not None and nxt.kind == "comma":
+                self.eat()
+                values.append(self.parse_value())
+            self.expect("rbrace", "'}'")
+            return InitNode(tok.line, tok.col, values)
+        return self.parse_expr()
+
     def parse_decl(self):
-        type_name = TYPES[self.eat().kind]
+        type_name = self.parse_type("a type")
         mutable = self.peek() is not None and self.peek().kind == "kw_mut"
         if mutable:
             self.eat()
@@ -435,16 +470,21 @@ class Parser:
                 name.line, name.col, f"variable '{name.text}' needs an initialiser in {{}}"
             )
         brace = self.eat()
-        values = [self.parse_expr()]
+        values = [self.parse_value()]
+        while (tok := self.peek()) is not None and tok.kind == "comma":
+            self.eat()
+            values.append(self.parse_value())
         self.expect("rbrace", "'}'")
         return DeclNode(name.line, name.col, name.text, type_name, mutable, values, brace)
 
     def parse_assign(self):
         name = self.eat()
-        self.expect("assign", f"':=' after '{name.text}'")
-        return AssignNode(name.line, name.col, name.text, [], self.parse_expr())
+        path = self.parse_path()
+        target = ".".join([name.text] + [f.text for f in path])
+        self.expect("assign", f"':=' after '{target}'")
+        return AssignNode(name.line, name.col, name.text, path, self.parse_expr())
 
-    def parse_block(self, after):
+    def parse_block(self, after, require_exit=False):
         if self.peek_line() is None:
             last = self.lines[-1][-1]
             raise CompileError(
@@ -461,12 +501,82 @@ class Parser:
             raise CompileError(
                 toks[0].line, toks[0].col, "statement after 'exit' in the same block"
             )
+        if require_exit and exit_node is None:
+            raise CompileError(brace.line, brace.col, "a function body must end with 'exit'")
         if not statements and exit_node is None:
             raise CompileError(brace.line, brace.col, "empty block")
         self.next_line()
         self.eat()
         self.end_line()
         return BlockNode(brace.line, brace.col, statements, exit_node)
+
+    def parse_type(self, what):
+        tok = self.peek()
+        if tok is None:
+            raise self.error(f"expected {what}")
+        if tok.kind in TYPES:
+            self.eat()
+            return TYPES[tok.kind]
+        if tok.kind == "ident":
+            self.eat()
+            return tok.text
+        raise self.error(f"expected {what}")
+
+    def parse_struct(self):
+        self.next_line()
+        self.eat()
+        name = self.expect("ident", "a struct name")
+        self.end_line()
+        if self.peek_line() is None:
+            raise CompileError(
+                name.line + 1, 1, f"expected '{{' on its own line after 'struct {name.text}', found end of file"
+            )
+        self.next_line()
+        brace = self.expect("lbrace", f"'{{' on its own line after 'struct {name.text}'")
+        self.end_line()
+
+        fields = []
+        while (toks := self.peek_line()) is not None and toks[0].kind != "rbrace":
+            self.next_line()
+            type_name = self.parse_type("a field type")
+            mutable = self.peek() is not None and self.peek().kind == "kw_mut"
+            if mutable:
+                self.eat()
+            field = self.expect("ident", "a field name")
+            self.end_line()
+            fields.append(FieldNode(field.line, field.col, field.text, type_name, mutable))
+
+        if self.peek_line() is None:
+            raise CompileError(brace.line, brace.col, "'{' is never closed")
+        if not fields:
+            raise CompileError(brace.line, brace.col, f"struct '{name.text}' has no fields")
+        self.next_line()
+        self.eat()
+        self.end_line()
+        return StructNode(name.line, name.col, name.text, fields)
+
+    def parse_fn(self):
+        self.next_line()
+        self.eat()
+        name = self.expect("ident", "a function name")
+        self.expect("assign", f"':=' after '{name.text}'")
+        self.expect("lparen", "'(' before the parameters")
+
+        params = []
+        if self.peek() is not None and self.peek().kind != "rparen":
+            while True:
+                type_name = self.parse_type("a parameter type")
+                param = self.expect("ident", "a parameter name")
+                params.append(ParamNode(param.line, param.col, param.text, type_name))
+                if self.peek() is None or self.peek().kind != "comma":
+                    break
+                self.eat()
+        self.expect("rparen", "')' after the parameters")
+        self.expect("arrow", "'->' before the result type")
+        result_type = self.parse_type("a result type")
+        self.end_line()
+        body = self.parse_block(f"fn {name.text}", require_exit=True)
+        return FnNode(name.line, name.col, name.text, params, result_type, body)
 
     def parse_if(self):
         tok = self.eat()
@@ -496,6 +606,11 @@ class Parser:
         if tok.kind in TYPES:
             return self.parse_decl()
         if tok.kind == "ident":
+            nxt = self.toks[self.pos + 1] if self.pos + 1 < len(self.toks) else None
+            if nxt is not None and nxt.kind == "lparen":
+                raise CompileError(tok.line, tok.col, "a call cannot be a statement")
+            if nxt is not None and nxt.kind in ("ident", "kw_mut"):
+                return self.parse_decl()
             return self.parse_assign()
         if tok.kind == "kw_if":
             return self.parse_if()
@@ -503,6 +618,12 @@ class Parser:
             return self.parse_while()
         if tok.kind == "kw_else":
             raise CompileError(tok.line, tok.col, "'else' without an 'if'")
+        if tok.kind == "kw_struct":
+            raise CompileError(
+                tok.line, tok.col, "a struct must come before every function and statement"
+            )
+        if tok.kind == "kw_fn":
+            raise CompileError(tok.line, tok.col, "a function must come before every statement")
         raise CompileError(tok.line, tok.col, f"'{tok.text}' does not start a statement")
 
     def parse_body(self):
@@ -518,6 +639,14 @@ class Parser:
         return statements, exit_node
 
     def parse_program(self):
+        structs = []
+        while (toks := self.peek_line()) is not None and toks[0].kind == "kw_struct":
+            structs.append(self.parse_struct())
+
+        functions = []
+        while (toks := self.peek_line()) is not None and toks[0].kind == "kw_fn":
+            functions.append(self.parse_fn())
+
         statements, exit_node = self.parse_body()
         if (toks := self.peek_line()) is not None:
             tok = toks[0]
@@ -530,7 +659,7 @@ class Parser:
                 raise CompileError(1, 1, "the program is empty: it must end with 'exit'")
             last = statements[-1]
             raise CompileError(last.line, last.col, "the program must end with 'exit'")
-        return ProgramNode(1, 1, [], [], statements, exit_node)
+        return ProgramNode(1, 1, structs, functions, statements, exit_node)
 
 
 class SemanticChecker:
