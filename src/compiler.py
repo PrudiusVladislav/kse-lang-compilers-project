@@ -58,10 +58,11 @@ class ProgramNode(Node):
 
 
 class FieldNode(Node):
-    def __init__(self, line, col, name, type_name, mutable):
+    def __init__(self, line, col, name, type_tok, mutable):
         super().__init__(line, col)
         self.name = name
-        self.type_name = type_name
+        self.type_tok = type_tok
+        self.type_name = type_tok.text
         self.mutable = mutable
 
     def label(self):
@@ -88,10 +89,11 @@ class StructNode(Node):
 
 
 class ParamNode(Node):
-    def __init__(self, line, col, name, type_name):
+    def __init__(self, line, col, name, type_tok):
         super().__init__(line, col)
         self.name = name
-        self.type_name = type_name
+        self.type_tok = type_tok
+        self.type_name = type_tok.text
         self.mutable = False
 
     def label(self):
@@ -102,11 +104,12 @@ class ParamNode(Node):
 
 
 class FnNode(Node):
-    def __init__(self, line, col, name, params, result_type, body):
+    def __init__(self, line, col, name, params, result_tok, body):
         super().__init__(line, col)
         self.name = name
         self.params = params
-        self.result_type = result_type
+        self.result_tok = result_tok
+        self.result_type = result_tok.text
         self.body = body
 
     def label(self):
@@ -124,10 +127,11 @@ class StmtNode(Node):
 
 
 class DeclNode(StmtNode):
-    def __init__(self, line, col, name, type_name, mutable, values, brace):
+    def __init__(self, line, col, name, type_tok, mutable, values, brace):
         super().__init__(line, col)
         self.name = name
-        self.type_name = type_name
+        self.type_tok = type_tok
+        self.type_name = type_tok.text
         self.mutable = mutable
         self.values = values
         self.brace = brace
@@ -457,7 +461,7 @@ class Parser:
         return self.parse_expr()
 
     def parse_decl(self):
-        type_name = self.parse_type("a type")
+        type_tok = self.parse_type("a type")
         mutable = self.peek() is not None and self.peek().kind == "kw_mut"
         if mutable:
             self.eat()
@@ -472,7 +476,7 @@ class Parser:
             self.eat()
             values.append(self.parse_value())
         self.expect("rbrace", "'}'")
-        return DeclNode(name.line, name.col, name.text, type_name, mutable, values, brace)
+        return DeclNode(name.line, name.col, name.text, type_tok, mutable, values, brace)
 
     def parse_assign(self):
         name = self.eat()
@@ -511,13 +515,9 @@ class Parser:
         tok = self.peek()
         if tok is None:
             raise self.error(f"expected {what}")
-        if tok.kind in TYPES:
-            self.eat()
-            return TYPES[tok.kind]
-        if tok.kind == "ident":
-            self.eat()
-            return tok.text
-        raise self.error(f"expected {what}")
+        if tok.kind not in TYPES and tok.kind != "ident":
+            raise self.error(f"expected {what}")
+        return self.eat()
 
     def parse_struct(self):
         self.next_line()
@@ -535,13 +535,13 @@ class Parser:
         fields = []
         while (toks := self.peek_line()) is not None and toks[0].kind != "rbrace":
             self.next_line()
-            type_name = self.parse_type("a field type")
+            type_tok = self.parse_type("a field type")
             mutable = self.peek() is not None and self.peek().kind == "kw_mut"
             if mutable:
                 self.eat()
             field = self.expect("ident", "a field name")
             self.end_line()
-            fields.append(FieldNode(field.line, field.col, field.text, type_name, mutable))
+            fields.append(FieldNode(field.line, field.col, field.text, type_tok, mutable))
 
         if self.peek_line() is None:
             raise CompileError(brace.line, brace.col, "'{' is never closed")
@@ -562,20 +562,20 @@ class Parser:
         params = []
         if self.peek() is not None and self.peek().kind != "rparen":
             while True:
-                type_name = self.parse_type("a parameter type")
+                type_tok = self.parse_type("a parameter type")
                 param = self.expect("ident", "a parameter name")
-                params.append(ParamNode(param.line, param.col, param.text, type_name))
+                params.append(ParamNode(param.line, param.col, param.text, type_tok))
                 if self.peek() is None or self.peek().kind != "comma":
                     break
                 self.eat()
         self.expect("rparen", "')' after the parameters")
         self.expect("arrow", "'->' before the result type")
-        result_type = self.parse_type("a result type")
+        result_tok = self.parse_type("a result type")
         self.end_line()
         self.in_fn = True
         body = self.parse_block(f"fn {name.text}", require_exit=True)
         self.in_fn = False
-        return FnNode(name.line, name.col, name.text, params, result_type, body)
+        return FnNode(name.line, name.col, name.text, params, result_tok, body)
 
     def parse_if(self):
         tok = self.eat()
@@ -744,7 +744,7 @@ class SemanticChecker:
                     raise CompileError(
                         field.line, field.col, f"field '{field.name}' is already declared in '{struct.name}'"
                     )
-                self.check_type(field.type_name, field, f"field '{field.name}'")
+                self.check_type(field.type_name, field.type_tok, f"field '{field.name}'")
                 field.index = index
                 struct.by_name[field.name] = field
             struct.const_field = self.const_field(struct)
@@ -753,12 +753,12 @@ class SemanticChecker:
         for fn in program.functions:
             if fn.name in self.funcs:
                 raise CompileError(fn.line, fn.col, f"function '{fn.name}' is already declared")
-            self.check_type(fn.result_type, fn, f"the result of '{fn.name}'")
+            self.check_type(fn.result_type, fn.result_tok, f"the result of '{fn.name}'")
             seen = set()
             for param in fn.params:
                 if param.name in seen:
                     raise CompileError(param.line, param.col, f"parameter '{param.name}' is declared twice")
-                self.check_type(param.type_name, param, f"parameter '{param.name}'")
+                self.check_type(param.type_name, param.type_tok, f"parameter '{param.name}'")
                 seen.add(param.name)
             self.funcs[fn.name] = fn
 
@@ -782,7 +782,7 @@ class SemanticChecker:
             raise CompileError(
                 node.line, node.col, f"variable '{node.name}' is already declared in this block"
             )
-        self.check_type(node.type_name, node, f"variable '{node.name}'")
+        self.check_type(node.type_name, node.type_tok, f"variable '{node.name}'")
         first = node.values[0]
         node.field_types = None
         if len(node.values) == 1 and not isinstance(first, InitNode) and (
@@ -790,6 +790,10 @@ class SemanticChecker:
         ):
             first.accept(self)
             self.check_assignable(first, node.type_name, node, f"initialise '{node.name}'")
+        elif node.type_name in IR_TYPES and len(node.values) == 1:
+            raise CompileError(
+                first.line, first.col, f"{{}} cannot initialise a value of type {node.type_name}"
+            )
         else:
             node.field_types = self.check_fields(node.values, node.type_name, node.brace)
         self.scopes[-1][node.name] = node
