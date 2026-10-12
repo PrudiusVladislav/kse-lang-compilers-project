@@ -278,7 +278,7 @@ class FieldAccessNode(ExprNode):
         self.path = path
 
     def label(self):
-        return f"Field {'.'.join([self.name] + [f.text for f in self.path])}"
+        return f"FieldAccess {'.'.join([self.name] + [f.text for f in self.path])}"
 
     def accept(self, visitor):
         return visitor.visit_field_access(self)
@@ -342,6 +342,7 @@ class BoolNode(ExprNode):
 class Parser:
     def __init__(self, lines):
         self.lines = [toks for toks in ([t for t in l if t.kind != "endline"] for l in lines) if toks]
+        self.in_fn = False
         self.line_pos = 0
         self.toks = []
         self.pos = 0
@@ -571,7 +572,9 @@ class Parser:
         self.expect("arrow", "'->' before the result type")
         result_type = self.parse_type("a result type")
         self.end_line()
+        self.in_fn = True
         body = self.parse_block(f"fn {name.text}", require_exit=True)
+        self.in_fn = False
         return FnNode(name.line, name.col, name.text, params, result_type, body)
 
     def parse_if(self):
@@ -614,6 +617,9 @@ class Parser:
             return self.parse_while()
         if tok.kind == "kw_else":
             raise CompileError(tok.line, tok.col, "'else' without an 'if'")
+        if tok.kind in ("kw_struct", "kw_fn") and self.in_fn:
+            what = "a struct" if tok.kind == "kw_struct" else "a function"
+            raise CompileError(tok.line, tok.col, f"{what} cannot be declared inside a function")
         if tok.kind == "kw_struct":
             raise CompileError(
                 tok.line, tok.col, "a struct must come before every function and statement"
