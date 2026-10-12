@@ -1,21 +1,24 @@
-# Practice 5 — if/else, scopes and basic blocks
+# Practice 6 — structs and functions
 
-A compiler for a small language of `i32`, `i64` and `bool`. `lexer.py` turns
-source bytes into typed tokens; `Parser` in `compiler.py` reads those tokens and
-builds a tree; `SemanticChecker` walks the tree, decides the type of every
-expression and rejects bad programs; `CodeGen` walks the checked tree and emits
-LLVM IR through the `llvmlite.ir` builder. `grammar.ebnf` is the grammar the
-parser implements, one method per rule.
+A compiler for a small language of `i32`, `i64`, `bool` and structs.
+`src/lexer.py` turns source bytes into typed tokens; `Parser` in
+`src/compiler.py` reads those tokens and builds a tree; `SemanticChecker` walks
+the tree, decides the type of every expression and rejects bad programs;
+`CodeGen` walks the checked tree and emits LLVM IR through the `llvmlite.ir`
+builder. `grammar.ebnf` is the grammar the parser implements, one method per
+rule.
 
-This practice adds the first branch. A block brings two things with it that are
-easy to confuse: a scope in the semantic pass and a basic block in the IR.
-Keeping them apart is the week's point — see **Scopes are not basic blocks**.
+This practice adds named types and a second kind of top-level item. A program
+is now structs, then functions, then statements, then `exit`, and the IR module
+has one function per `fn` beside `main`. Every name — a variable, a field, a
+function — is resolved once, by the semantic pass, and the generator works from
+what it wrote on the tree: see **Structs in the IR** and **Functions in the IR**.
 
 ## Running
 
 ```sh
-python3 compiler.py input.txt output.ll   # compile
-python3 compiler.py --ast input.txt       # print the tree, write nothing
+python3 src/compiler.py input.txt output.ll   # compile
+python3 src/compiler.py --ast input.txt       # print the tree, write nothing
 lli output.ll                             # run
 opt -passes=mem2reg -S output.ll          # the same IR, allocas promoted
 ```
@@ -30,7 +33,7 @@ clang -fPIE output.o -o program && ./program
 The lexer can be inspected on its own:
 
 ```sh
-python3 lexer.py lexer_demo.txt
+python3 src/lexer.py lexer_demo.txt
 ```
 
 Every one of these has a `make` target: `make run`, `make ast`, `make build`,
@@ -52,7 +55,7 @@ block, so it reports `7:1` for an `else` on line 6.
 ## The phases
 
 ```
-lex      bytes  -> one token vector per line        lexer.py
+lex      bytes  -> one token vector per line        src/lexer.py
 parse    tokens -> a tree of Node subclasses        Parser
 check    tree   -> the same tree, typed             SemanticChecker
 walk     tree   -> LLVM IR                          CodeGen
@@ -67,10 +70,14 @@ which is what lets a block span lines. `i32 x{5` is still an error at the same
 place, now `1:8: expected '}', found end of line`.
 
 The parser is recursive descent, written by hand: `peek`, `eat`, `expect`, and
-one method per grammar rule. One token of look-ahead decides every choice. The
-tree holds names, numbers, flags and child nodes — never a token — so every node
-carries the `line, col` of the token it came from, and later passes report their
-errors from there.
+one method per grammar rule. One token of look-ahead decides every choice, even
+now that a statement and a struct declaration both start with a name:
+`Point p{…}` is a name followed by a name, `p := …` and `p.x := …` are not. The
+parser never learns which names are types. Every node carries the `line, col` of
+the token it came from, and later passes report their errors from there; where
+an error belongs to some other token, the node keeps that token too — each link
+of a field chain, the `{` of a declaration, and the type of a declaration, a
+field, a parameter or a result.
 
 Precedence and associativity come out of the grammar rather than a table:
 `parse_arith` calls `parse_term` before it looks for `+`, so everything a `*`
@@ -84,11 +91,12 @@ i32 mut a{10 - 3 - 2}   5, not 9
 bool c{x * 2 != a + 5}  compares 28 with 10
 ```
 
-The semantic pass owns the symbol table (name → declaration) and runs on the
-whole tree before `CodeGen` is constructed, so a rejected program never has a
-single instruction built. Every expression gets `node.type`, every name gets
-`node.decl`; the generator reads those two fields and looks nothing up. `--ast`
-stops after parsing, so it prints any well-formed tree, typed correctly or not.
+The semantic pass owns the symbol tables and runs on the whole tree before
+`CodeGen` is constructed, so a rejected program never has a single instruction
+built. Every expression gets `node.type`, every variable `node.decl`, every
+field chain `node.indices`, every call and every `exit` `node.fn`; the generator
+reads those fields and looks nothing up. `--ast` stops after parsing, so it
+prints any well-formed tree, typed correctly or not.
 
 ## The language
 
@@ -126,8 +134,9 @@ exit a
 `!` applies to the factor right after it, so it binds tighter than every
 operator: `!a == b` compares `!a` with `b`. Spaces after `!` are optional, and
 `!=` still lexes as one token — after `!` the machine looks at one byte, `=`
-makes `!=`, anything else makes `!` and is read again. There are still no
-parentheses and no unary minus.
+makes `!=`, anything else makes `!` and is read again. `->` is lexed the same way
+from `-`. Parentheses appear only in calls: there is still no grouping and no
+unary minus.
 
 `while` takes the same block:
 
@@ -142,11 +151,74 @@ while i != 11
 exit sum
 ```
 
-`exit` takes a constant, `true`, `false` or a variable, never an operation; a
-bool prints as `true` or `false`. A variable is declared once, before its first
-use. `i32`, `i64`, `bool`, `mut`, `exit`, `true` and `false` are reserved. Blank
-lines and extra spacing are ignored. There are no parentheses, and a single `=`
-or `!` is a lexical error.
+`exit` takes a constant, `true`, `false`, a variable, a field chain or a call,
+never an operation; a bool prints as `true` or `false`. A variable is declared
+once, before its first use. `i32`, `i64`, `bool`, `mut`, `exit`, `if`, `else`,
+`while`, `struct`, `fn`, `true` and `false` are reserved. Blank lines and extra
+spacing are ignored. A single `=` is a lexical error.
+
+### Structs
+
+A struct is declared at the top of the program, before any function. Each field
+stands on its own line and is constant unless marked `mut`; its type is a
+built-in or a struct declared above. An object takes one value per field, in
+order, or one object of its own type, which it copies:
+
+```
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+struct Circle
+{
+    Point center
+    i32 mut radius
+}
+Point p{10, 20}
+Circle mut c{p, 5}
+Point q{p}
+c.radius := c.center.x + 1
+exit c.radius
+```
+
+A field chain reads anywhere a factor can and writes on the left of `:=`. A write
+needs `mut` on every link — the object and each field on the way — so
+`c.center.x := 1` is rejected here, because `center` is const. A whole object can
+be replaced only if it is `mut` and so is every field in it, at every depth.
+
+A `{}` may stand for a struct field, with the same rules as the outer one:
+`Circle c{{1, 2}, 5}`, and `Ring g{{{10, 20}, r}, {{10, 20}, 2}}` two levels down.
+
+### Functions
+
+Functions come after the structs and before the first statement:
+
+```
+fn fib := (i32 n) -> i32
+{
+    if n == 0
+    {
+        exit 0
+    }
+    if n == 1
+    {
+        exit 1
+    }
+    i32 result{fib(n - 1) + fib(n - 2)}
+    exit result
+}
+exit fib(10)
+```
+
+Parameters are copies and are constant. The body is a block whose last line is
+`exit`; inside a function `exit` returns, and an `exit` inside an `if` returns
+early. The body sees its parameters, its own variables and every function of the
+program — the ones below it and itself included — but no top-level variable.
+Parameters and the body's own declarations share one frame, so a local cannot
+redeclare a parameter. A call stands wherever a factor can, never alone on a
+line. Functions and variables are separate namespaces: `total(total)` calls the
+function `total` with the variable `total`.
 
 ## The type rules
 
@@ -154,9 +226,14 @@ or `!` is a lexical error.
   `i64`, anything above `2⁶³−1` is an error.
 - `+ - *` take two integers; the result is the wider type.
 - `== !=` take two integers of any widths or two bools; the result is `bool`.
-- The one conversion is `i32 → i64`, in an initialiser or an assignment. Nothing
-  narrows, and a bool never meets an integer.
+- The one conversion is `i32 → i64`, in an initialiser, an assignment, a field
+  value in `{}`, an argument, or the `exit` of a function. Nothing narrows, and a
+  bool never meets an integer.
 - The condition of an `if` or a `while` is a bool, and `!` takes a bool.
+- A struct matches only itself, and no operator takes one.
+- A call has its function's result type and takes exactly its parameters.
+- Inside a function `exit` has the result type; at the top level it has a
+  built-in type.
 
 `CodeGen` turns every widening the checker allowed into an explicit `sext` via
 one `coerce` helper, called from the initialiser, the assignment, both operands
@@ -221,10 +298,15 @@ every `Var` and every `Assign` to the declaration it means, and the generator
 reads that field — it never looks a name up, so it never has to know which `x` is
 which.
 
+A function body starts a frame stack of its own, holding only its parameters, so
+a top-level variable is unknown inside it. The generator does the same with its
+slots: `enter_function` gives each function a fresh builder, entry block and
+slot table.
+
 ## Where the allocas go
 
-Every `alloca` goes to the entry block whatever block the builder is in when the
-declaration is met, through one helper that positions at entry, allocates and
+Every `alloca` goes to the entry block of the function being generated, whatever
+block the builder is in when the declaration is met, through one helper that positions at entry, allocates and
 comes back. Two reasons: a slot created inside `then` does not exist on the
 `else` path, and LLVM only promotes entry-block allocas to registers. Shadowing
 costs nothing — two declarations, two slots.
@@ -242,7 +324,81 @@ A value that depends on which block control came from. That is SSA, and the
 allocas are what let LLVM build it. `tests/ok/if-else_both-arms-assign.txt` is
 the program; `make phi` is the demo.
 
+## Structs in the IR
+
+A struct is a named type, declared in the order of the source, so a field's
+struct is always declared before it:
+
+```
+%"Point" = type {i32, i32}
+%"Circle" = type {%"Point", i32}
+```
+
+An object is an `alloca` of that type. The checker turns every chain into field
+indices, and the generator turns those into one `getelementptr` from the root —
+`c.center.x` is field 0 of field 0, after the leading `0` that steps through the
+pointer. A read is that `gep` and a `load`, a write
+is the `gep` and a `store`:
+
+```
+%".11" = getelementptr inbounds %"Circle", %"Circle"* %"c", i32 0, i32 0, i32 0
+%".12" = load i32, i32* %".11"
+```
+
+`{10, 20}` stores each value through its field's `gep`; `{p}` and `:=` of a whole
+object `load` and `store` the struct as one value. A nested `{}` is one value of
+its struct type, built field by field with `insertvalue` from `undef`.
+
+## Functions in the IR
+
+Each `fn` is a function of the module, named with an `fn_` prefix so a program
+can define `main` or `printf` (`tests/ok/fn_runtime-names.txt`). All of them are
+declared before any body is generated, which is what lets a function call itself
+or one declared below it. A struct parameter or result passes by value:
+
+```
+define %"Point" @"fn_moved"(%"Point" %"p", i32 %"dx")
+{
+entry:
+  %"p.1" = alloca %"Point"
+  store %"Point" %"p", %"Point"* %"p.1"
+  …
+  ret %"Point" %".16"
+}
+```
+
+Each parameter is stored into a slot in the function's own entry block, so every
+chain starts at an `alloca` and a field of a parameter is read with `gep` like
+any other. `exit` inside a function is a `ret`; at the top level it is still the
+`printf` and `ret i32 0` of `main`. A call is a `call` with every `i32` argument
+for an `i64` parameter widened by `sext` first.
+
 ## Deliberate decisions
+
+**Where a write through a chain fails.** At the first link that is not `mut`:
+`p.x := 15` with a const `p` points at `p`, `c.center.x := 25` with a const
+`center` points at `center`. Replacing a whole object points at the object and
+names the const field, at any depth: `its field 'center.y' is not mut`.
+
+**A struct that uses itself or a struct below it.** Neither has a check of its
+own. A struct's name is registered only after its fields are checked, so
+`Node next` inside `Node`, or a field of a struct declared further down, is an
+unknown type.
+
+**Where an unknown type is reported.** At the type, not at the name it was
+declared for: `Foo p{1}` is `1:1`, and an unknown result type points past the
+parameters to the type after `->`.
+
+**Where a bad `{}` is reported.** At that `{`: a wrong number of values at the
+brace that holds them, a `{}` for a built-in field at the inner brace. A `{}`
+for an `i32` variable, `i32 a{{1}}`, points at the inner `{`, since the outer one
+is the variable's own initialiser.
+
+**Order errors in `parse_statement`.** `parse_program` reads its three phases
+as three loops, so a `struct` after a function or an `fn` after a statement is
+not seen by the loop it belongs to — it reaches `parse_statement`, and that is
+where it is rejected, at its own line. Inside a function body the message says
+that a struct or a function cannot be declared there.
 
 **Self-reference in an initialiser.** `i32 x{x}` is rejected with
 `variable 'x' is used before its declaration`. The name is entered into the symbol
@@ -282,8 +438,8 @@ a `tests/ok/NAME.ast` exists, the `--ast` dump is compared against it too.
 Everything needed is in the `Dockerfile`:
 
 ```sh
-docker build -t lcd-practice5 .
-docker run --rm -v "$PWD:/work" lcd-practice5 ./run_tests.sh
+docker build -t lcd-practice6 .
+docker run --rm -v "$PWD:/work" lcd-practice6 ./run_tests.sh
 ```
 
 `check.py` runs the same programs and prints one row per test with a pass count
@@ -293,11 +449,11 @@ files.
 ## Layout
 
 ```
-lexer.py        byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG
+src/lexer.py    byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG, ARROW
 grammar.ebnf    the grammar, one rule per parse method
-compiler.py     the AST classes, the parser, the semantic pass, the codegen walk
-tests/ok/       27 programs that run, 10 of them with expected trees
-tests/err/      45 programs that must fail
+src/compiler.py the AST classes, the parser, the semantic pass, the codegen walk
+tests/ok/       42 programs that run, 12 of them with expected trees
+tests/err/      104 programs that must fail
 run_tests.sh    compiles and runs each test, compares against .expected
 check.py        the same tests as a pass/fail table
 Dockerfile      ubuntu:24.04 with llvm, clang and llvmlite

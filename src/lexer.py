@@ -1,4 +1,4 @@
-START, IDENT, NUMBER, PAIR, BANG = "START", "IDENT", "NUMBER", "PAIR", "BANG"
+START, IDENT, NUMBER, PAIR, BANG, ARROW = "START", "IDENT", "NUMBER", "PAIR", "BANG", "ARROW"
 
 KEYWORDS = {
     "i32": "kw_i32",
@@ -11,6 +11,8 @@ KEYWORDS = {
     "while": "kw_while",
     "true": "kw_true",
     "false": "kw_false",
+    "struct": "kw_struct",
+    "fn": "kw_fn",
 }
 CATEGORIES = {
     "kw_i32": ("keyword", "typename"),
@@ -21,6 +23,8 @@ CATEGORIES = {
     "kw_if": ("keyword", "statement"),
     "kw_else": ("keyword", "statement"),
     "kw_while": ("keyword", "statement"),
+    "kw_struct": ("keyword", "statement"),
+    "kw_fn": ("keyword", "statement"),
     "kw_true": ("constant", "boolean"),
     "kw_false": ("constant", "boolean"),
     "ident": ("identifier", None),
@@ -34,13 +38,21 @@ CATEGORIES = {
     "eq": ("operator", "comparison"),
     "ne": ("operator", "comparison"),
     "not": ("operator", "logical"),
+    "dot": ("operator", "field"),
+    "arrow": ("operator", "result"),
+    "lparen": ("call", "start"),
+    "rparen": ("call", "end"),
+    "comma": ("separator", None),
     "endline": ("endline", None),
 }
 SINGLES = {
     ord("{"): "lbrace",
     ord("}"): "rbrace",
+    ord("("): "lparen",
+    ord(")"): "rparen",
+    ord(","): "comma",
+    ord("."): "dot",
     ord("+"): "plus",
-    ord("-"): "minus",
     ord("*"): "star",
 }
 PAIRS = {
@@ -106,6 +118,8 @@ def lex(data):
                 state, pair, start_col = PAIR, PAIRS[b], col
             elif b == ord("!"):
                 state, start_col = BANG, col
+            elif b == ord("-"):
+                state, start_col = ARROW, col
             elif b in SINGLES:
                 tokens.append(Token(SINGLES[b], chr(b), line, col))
             else:
@@ -136,6 +150,15 @@ def lex(data):
                 state = START
             else:
                 tokens.append(Token("not", "!", line, start_col))
+                state = START
+                continue
+
+        elif state == ARROW:
+            if b == ord(">"):
+                tokens.append(Token("arrow", "->", line, start_col))
+                state = START
+            else:
+                tokens.append(Token("minus", "-", line, start_col))
                 state = START
                 continue
 

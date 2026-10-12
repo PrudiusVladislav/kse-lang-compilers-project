@@ -1,0 +1,19 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+struct Circle
+{
+    Point center
+    i32 mut radius
+}
+struct Ring
+{
+    Circle outer
+    i32 width
+}
+Point p{3, 4}
+Circle c{p, 10}
+Ring g{c, 2}
+exit g.outer.center.y

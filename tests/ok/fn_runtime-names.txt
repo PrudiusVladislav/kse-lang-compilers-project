@@ -1,0 +1,14 @@
+fn main := (i32 n) -> i32
+{
+    exit n
+}
+fn printf := () -> bool
+{
+    exit true
+}
+i32 r{main(7)}
+if printf()
+{
+    exit r
+}
+exit 0

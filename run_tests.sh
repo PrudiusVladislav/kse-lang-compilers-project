@@ -15,7 +15,7 @@ for src in tests/ok/*.txt tests/err/*.txt; do
     ll="$TMP/${name//\//_}.ll"
 
     if [[ $name == ok/* ]]; then
-        if ! python3 compiler.py "$src" "$ll" 2>"$TMP/err"; then
+        if ! python3 src/compiler.py "$src" "$ll" 2>"$TMP/err"; then
             echo "FAIL $name: compiler failed"
             sed 's/^/      /' "$TMP/err"
             fail=$((fail + 1)); continue
@@ -25,13 +25,13 @@ for src in tests/ok/*.txt tests/err/*.txt; do
             sed 's/^/      /' "$TMP/err"
             fail=$((fail + 1)); continue
         fi
-        if [[ -e $base.ast ]] && ! python3 compiler.py --ast "$src" | diff -q - "$base.ast" >/dev/null; then
+        if [[ -e $base.ast ]] && ! python3 src/compiler.py --ast "$src" | diff -q - "$base.ast" >/dev/null; then
             echo "FAIL $name: --ast does not match $base.ast"
-            python3 compiler.py --ast "$src" | diff - "$base.ast" | sed 's/^/      /'
+            python3 src/compiler.py --ast "$src" | diff - "$base.ast" | sed 's/^/      /'
             fail=$((fail + 1)); continue
         fi
     else
-        if python3 compiler.py "$src" "$ll" 2>"$TMP/err"; then
+        if python3 src/compiler.py "$src" "$ll" 2>"$TMP/err"; then
             echo "FAIL $name: expected a compilation error"
             fail=$((fail + 1)); continue
         fi

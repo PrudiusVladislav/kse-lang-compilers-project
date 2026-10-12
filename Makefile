@@ -1,4 +1,4 @@
-IMAGE := lcd-practice5
+IMAGE := lcd-practice6
 DOCKER := docker run --rm $(if $(shell test -t 0 && echo y),-it) -v "$(CURDIR)":/work -w /work $(IMAGE)
 
 .PHONY: image shell tokens ast run build phi tests check clean
@@ -10,24 +10,24 @@ shell:
 	$(DOCKER) bash
 
 tokens:
-	$(DOCKER) python3 lexer.py lexer_demo.txt
+	$(DOCKER) python3 src/lexer.py lexer_demo.txt
 
 ast:
-	$(DOCKER) python3 compiler.py --ast input.txt
+	$(DOCKER) python3 src/compiler.py --ast input.txt
 
 run:
-	$(DOCKER) bash -c 'python3 compiler.py input.txt output.ll && lli output.ll'
+	$(DOCKER) bash -c 'python3 src/compiler.py input.txt output.ll && lli output.ll'
 
 build:
 	$(DOCKER) bash -c '\
-		python3 compiler.py input.txt output.ll && \
+		python3 src/compiler.py input.txt output.ll && \
 		llc -filetype=obj -relocation-model=pic output.ll -o output.o && \
 		clang -fPIE output.o -o program && \
 		./program'
 
 phi:
 	$(DOCKER) bash -c '\
-		python3 compiler.py input.txt output.ll && \
+		python3 src/compiler.py input.txt output.ll && \
 		opt -passes=mem2reg -S output.ll'
 
 tests:

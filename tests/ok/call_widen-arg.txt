@@ -1,0 +1,7 @@
+fn big := (i64 a, i64 b) -> i64
+{
+    i64 product{a * b}
+    exit product
+}
+i32 x{100000}
+exit big(x, 100000)

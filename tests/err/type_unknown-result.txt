@@ -1,0 +1,5 @@
+fn f := () -> Foo
+{
+    exit 1
+}
+exit 1

@@ -1,0 +1,5 @@
+struct
+{
+    i32 x
+}
+exit 1
