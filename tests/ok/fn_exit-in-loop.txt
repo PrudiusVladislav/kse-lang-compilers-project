@@ -1,0 +1,14 @@
+fn root := (i32 square) -> i32
+{
+    i32 mut i{0}
+    while i != 100
+    {
+        if i * i == square
+        {
+            exit i
+        }
+        i := i + 1
+    }
+    exit 0
+}
+exit root(49)

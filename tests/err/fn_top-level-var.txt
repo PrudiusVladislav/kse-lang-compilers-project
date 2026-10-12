@@ -1,0 +1,6 @@
+fn peek := () -> i32
+{
+    exit secret
+}
+i32 secret{1}
+exit peek()

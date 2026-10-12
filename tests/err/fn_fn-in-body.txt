@@ -1,0 +1,12 @@
+fn f := (i32 a) -> i32
+{
+    if a == 1
+    {
+        fn g := () -> i32
+        {
+            exit 1
+        }
+    }
+    exit a
+}
+exit f(1)

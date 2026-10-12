@@ -1,0 +1,5 @@
+struct P
+{
+    Foo f
+}
+exit 1

@@ -1,0 +1,5 @@
+struct P
+{
+    5 x
+}
+exit 1

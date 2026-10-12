@@ -1,0 +1,9 @@
+struct A
+{
+    B inner
+}
+struct B
+{
+    i32 mut v
+}
+exit 1

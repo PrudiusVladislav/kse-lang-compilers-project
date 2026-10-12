@@ -1,0 +1,7 @@
+fn big := () -> i64
+{
+    i64 r{5}
+    exit r
+}
+i32 x{big()}
+exit x

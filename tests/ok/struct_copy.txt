@@ -1,0 +1,10 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+Point mut p{1, 2}
+Point q{p}
+p.x := 50
+i32 sum{p.x + q.x}
+exit sum

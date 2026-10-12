@@ -1,0 +1,6 @@
+struct Point
+{
+    i32 mut x
+    i32 x
+}
+exit 1
