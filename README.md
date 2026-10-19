@@ -1,4 +1,4 @@
-# Practice 6 — structs and functions
+# Practice 7 — member functions, read and print
 
 A compiler for a small language of `i32`, `i64`, `bool` and structs.
 `src/lexer.py` turns source bytes into typed tokens; `Parser` in
@@ -8,18 +8,19 @@ the tree, decides the type of every expression and rejects bad programs;
 builder. `grammar.ebnf` is the grammar the parser implements, one method per
 rule.
 
-This practice adds named types and a second kind of top-level item. A program
-is now structs, then functions, then statements, then `exit`, and the IR module
-has one function per `fn` beside `main`. Every name — a variable, a field, a
-function — is resolved once, by the semantic pass, and the generator works from
-what it wrote on the tree: see **Structs in the IR** and **Functions in the IR**.
+This practice puts functions inside structs and adds input and output. A member
+function sees the fields of its object by name and is called on an object,
+`p.d2()`; in the IR it takes the object by address, so it can change it. `read()`
+reads an integer from stdin, and `print(…)` prints a number, a bool, a string
+literal or a whole object. See **Member functions**, **read and print**, and the
+IR sections at the end of each.
 
 ## Running
 
 ```sh
 python3 src/compiler.py input.txt output.ll   # compile
 python3 src/compiler.py --ast input.txt       # print the tree, write nothing
-lli output.ll                             # run
+lli output.ll                             # run (stdin feeds read())
 opt -passes=mem2reg -S output.ll          # the same IR, allocas promoted
 ```
 
@@ -151,10 +152,11 @@ while i != 11
 exit sum
 ```
 
-`exit` takes a constant, `true`, `false`, a variable, a field chain or a call,
-never an operation; a bool prints as `true` or `false`. A variable is declared
-once, before its first use. `i32`, `i64`, `bool`, `mut`, `exit`, `if`, `else`,
-`while`, `struct`, `fn`, `true` and `false` are reserved. Blank lines and extra
+`exit` takes a constant, `true`, `false`, a variable, a field chain, a call or
+`read()`, never an operation; a bool prints as `true` or `false`. A variable is
+declared once, before its first use. `i32`, `i64`, `bool`, `mut`, `exit`, `if`,
+`else`, `while`, `struct`, `fn`, `true`, `false`, `read` and `print` are
+reserved. Blank lines and extra
 spacing are ignored. A single `=` is a lexical error.
 
 ### Structs
@@ -220,6 +222,59 @@ redeclare a parameter. A call stands wherever a factor can, never alone on a
 line. Functions and variables are separate namespaces: `total(total)` calls the
 function `total` with the variable `total`.
 
+### Member functions
+
+A struct may end with functions, after all of its fields. A member function is
+declared like any other and called on an object with `.`, at the end of a field
+chain or on the result of another call:
+
+```
+struct Point
+{
+    i32 mut x
+    i32 mut y
+    fn shift := (i32 dx) -> i32
+    {
+        x := x + dx
+        exit x
+    }
+}
+Point mut p{3, 4}
+i32 nx{p.shift(2)}
+exit p.x
+```
+
+Inside the body a name is a parameter or a local first, then a field of the
+object; a call `f(…)` is a member function of the same struct first, then a
+global one. Like any function, the body sees no top-level variable. A field
+without `mut` cannot be assigned, inside a member function too.
+
+A member function is *mutating* if it assigns a field of its object, or calls a
+mutating member function on its object or on one of its fields. A mutating call
+needs `mut` on every link — the object and each field on the way — exactly like
+a write through the same chain; a non-mutating one may be called on anything.
+Since member functions may call each other in a cycle, this is decided after
+every body is checked: mark the ones that assign a field, then repeat until no
+new one gets marked. A call's result is a temporary copy: any member function may
+be called on it, mutating or not, but it can never be assigned.
+
+### read and print
+
+`read()` is an `i32` factor that reads one integer from stdin: `i32 a{read()}`,
+`exit read()`. `print(…)` is a statement, so it stands wherever a statement can
+and has no value. It prints its argument and a newline:
+
+```
+print("p and c:")        p and c:
+print(c)                 Circle{center: Point{x: 3, y: 4}, radius: 2}
+print(big * 2)           6000000000
+print(p.x == 3)          true
+```
+
+A string literal is `"`, any bytes but `"` and a newline, then `"`, and stands
+only inside `print`. There are no escapes: `\n` in a literal is two characters,
+and a `%` stays a `%`. The output of `print` comes before the exit line.
+
 ## The type rules
 
 - A constant has the narrowest type it fits: `10` is `i32`, `3000000000` is
@@ -234,6 +289,7 @@ function `total` with the variable `total`.
 - A call has its function's result type and takes exactly its parameters.
 - Inside a function `exit` has the result type; at the top level it has a
   built-in type.
+- `read()` is `i32`. `print` takes any type, and has none itself.
 
 `CodeGen` turns every widening the checker allowed into an explicit `sext` via
 one `coerce` helper, called from the initialiser, the assignment, both operands
@@ -373,6 +429,34 @@ any other. `exit` inside a function is a `ret`; at the top level it is still the
 `printf` and `ret i32 0` of `main`. A call is a `call` with every `i32` argument
 for an `i64` parameter widened by `sext` first.
 
+## Member functions in the IR
+
+A member function is a function of the module named after the struct and the
+function, `Point_shift`. Its first parameter is a pointer to the object, `this`;
+the language has no name for it. A field in the body is a `gep` on `this`, so
+`x := x + dx` is a `gep`, a `load`, an `add` and a `store`, and the change lands
+in the caller's object. A call passes the object's address — its `alloca`, or a
+`gep` into it for `c.center.d2()` — and never loads it. A call's result is first
+stored into a temporary `alloca`, and that address is `this` for whatever is
+called on it next.
+
+Global functions keep their `fn_` prefix, so `Point_shift` can never collide with
+a function the program declares, even one called `Point_shift`.
+
+## read and print in the IR
+
+`scanf` is declared beside `printf`; `read()` passes it the global `"%d"` and an
+`i32` slot in the entry block, then loads the slot. `print` reuses the same one
+`printf` as `exit`. Every format and every text is a private global constant,
+created once per distinct content: `"%d\n"` for an `i32`, `"%lld\n"` for an
+`i64`, `"%s\n"` for a literal and for a bool, whose argument is a `select`
+between the globals `"true"` and `"false"`.
+
+A struct is stored into an `alloca` and printed by walking its field table:
+`printf("Point{")`, then for every field a `gep`, a `load` and a `printf` with a
+format like `", y: %d"`, then `printf("}")`. A struct field goes the same way one
+level down, so a new struct prints with no new code in the compiler.
+
 ## Deliberate decisions
 
 **Where a write through a chain fails.** At the first link that is not `mut`:
@@ -431,15 +515,16 @@ the operation's type that does not fit, so `i32 x{a + 3000000000}` gets the usua
 ```
 
 Each `NAME.txt` is paired with `NAME.expected`. A program in `tests/ok/` is
-compiled and run through `lli`, and its stdout is compared; a program in
+compiled and run through `lli`, with `NAME.in` as its stdin when there is one,
+and its whole stdout — the `print` lines and the exit line — is compared; a program in
 `tests/err/` must fail with the expected message and leave no output file. Where
 a `tests/ok/NAME.ast` exists, the `--ast` dump is compared against it too.
 
 Everything needed is in the `Dockerfile`:
 
 ```sh
-docker build -t lcd-practice6 .
-docker run --rm -v "$PWD:/work" lcd-practice6 ./run_tests.sh
+docker build -t lcd-practice7 .
+docker run --rm -v "$PWD:/work" lcd-practice7 ./run_tests.sh
 ```
 
 `check.py` runs the same programs and prints one row per test with a pass count
@@ -449,7 +534,7 @@ files.
 ## Layout
 
 ```
-src/lexer.py    byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG, ARROW
+src/lexer.py    byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG, ARROW, STRING
 grammar.ebnf    the grammar, one rule per parse method
 src/compiler.py the AST classes, the parser, the semantic pass, the codegen walk
 tests/ok/       42 programs that run, 12 of them with expected trees

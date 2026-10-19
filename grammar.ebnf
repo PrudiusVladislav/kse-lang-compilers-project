@@ -1,10 +1,11 @@
-(* The language in EBNF, with the Practice 6 structs and functions.
+(* The language in EBNF, with the Practice 7 member functions,
+   read() and print.
    Quoted words are terminals: tokens the lexer emits, with the same text.
    ident and number are terminals too; how they are spelled is lexer.py's rule. *)
 
 program    ::= { struct } { fn } { statement } exit_stmt
 
-struct     ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
+struct     ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
 
 field_decl ::= type [ "mut" ] ident NL
 
@@ -14,7 +15,7 @@ param      ::= type ident
 
 fn_body    ::= "{" NL { statement } exit_stmt NL "}" NL
 
-statement  ::= decl | assign | if | while
+statement  ::= decl | assign | if | while | print
 
 if         ::= "if" expr NL block [ "else" NL block ]
 
@@ -38,11 +39,17 @@ arith      ::= term { ( "+" | "-" ) term }
 
 term       ::= factor { "*" factor }
 
-factor     ::= number | "true" | "false" | ident | field | call | "!" factor
+factor     ::= number | "true" | "false" | "read" "(" ")" | chain | "!" factor
 
-field      ::= ident "." ident { "." ident }
+chain      ::= ( ident | call ) { "." ident [ args ] }
 
-call       ::= ident "(" [ expr { "," expr } ] ")"
+call       ::= ident args
+
+args       ::= "(" [ expr { "," expr } ] ")"
+
+print      ::= "print" "(" ( string | expr ) ")"
+
+string     ::= '"' { any byte except '"' and newline } '"'
 
 
 (* Line structure is lexical: the lexer gives one token vector per line, the
@@ -99,3 +106,27 @@ call       ::= ident "(" [ expr { "," expr } ] ")"
    frame in the semantic pass and one builder position in codegen, and those
    three do not line up: merge belongs to no brace, and an exit ends a basic
    block without popping a frame. *)
+
+(* chain is ident, field, call and member_call in one rule, because the parser
+   cannot tell them apart before it reaches the end: after each name comes
+   '.', and the chain goes on, '(', and that name was a function, or anything
+   else, and the chain is over. A bare ident is a variable, ident args a
+   function call, and a name with args after a '.' a member function called on
+   everything to its left. The chain may go on after args: that is the extra
+   task, a field or a member function of a call's result. Whether that result
+   is a struct is the semantic pass's question, as is p.d2() on a type name.
+
+   assign keeps its old rule, ident { "." ident }, so a call can never stand
+   left of ':=': p.moved(1).x := 5 parses as far as the '(' and fails there.
+
+   A struct ends with its member functions, and fn is reused for them as it
+   is: the loop over field_decl stops at "fn" or "}", and from then on only
+   fn can follow. A field after a member function is a field_decl where the
+   grammar wants fn or "}", so the parser rejects it at that field.
+
+   read and print are keywords, not functions, so neither can be declared,
+   assigned or called through a '.': every rule that wants an ident refuses
+   them. read is a factor with an empty argument list; print is a statement,
+   so it has no value, and its argument is the one place a string may stand.
+   string is lexical like ident and number, one state of the lexer's machine;
+   it has no escapes, so \n inside it is two bytes. *)
