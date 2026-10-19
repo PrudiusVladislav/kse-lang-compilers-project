@@ -566,8 +566,8 @@ files.
 src/lexer.py    byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG, ARROW, STRING
 grammar.ebnf    the grammar, one rule per parse method
 src/compiler.py the AST classes, the parser, the semantic pass, the codegen walk
-tests/ok/       44 programs that run, 12 of them with expected trees
-tests/err/      107 programs that must fail
+tests/ok/       55 programs that run, 13 of them with expected trees
+tests/err/      140 programs that must fail
 run_tests.sh    compiles and runs each test, compares against .expected
 check.py        the same tests as a pass/fail table
 Dockerfile      ubuntu:24.04 with llvm, clang and llvmlite
