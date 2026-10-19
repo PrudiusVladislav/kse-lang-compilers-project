@@ -9,6 +9,8 @@ I64, I32, I8, I1 = ir.IntType(64), ir.IntType(32), ir.IntType(8), ir.IntType(1)
 FORMAT_INT = b"Program exit with result %lld\n\0"
 FORMAT_TRUE = b"Program exit with result true\n\0"
 FORMAT_FALSE = b"Program exit with result false\n\0"
+FORMAT_READ = b"%d\0"
+PRINT_FORMATS = {"i32": "%d", "i64": "%lld", "bool": "%s", "string": "%s"}
 IR_TYPES = {"i32": I32, "i64": I64, "bool": I1}
 I32_MAX, I64_MAX = 2**31 - 1, 2**63 - 1
 
@@ -73,16 +75,19 @@ class FieldNode(Node):
 
 
 class StructNode(Node):
-    def __init__(self, line, col, name, fields):
+    def __init__(self, line, col, name, fields, methods):
         super().__init__(line, col)
         self.name = name
         self.fields = fields
+        self.methods = methods
+        for method in methods:
+            method.struct = self
 
     def label(self):
         return f"Struct {self.name}"
 
     def children(self):
-        return self.fields
+        return self.fields + self.methods
 
     def accept(self, visitor):
         return visitor.visit_struct(self)
@@ -120,6 +125,20 @@ class FnNode(Node):
 
     def accept(self, visitor):
         return visitor.visit_fn(self)
+
+
+class MemberFnNode(FnNode):
+    def __init__(self, line, col, name, params, result_tok, body):
+        super().__init__(line, col, name, params, result_tok, body)
+        self.struct = None
+        self.mutating = False
+        self.self_calls = []
+
+    def label(self):
+        return f"MemberFn {self.name} -> {self.result_type}"
+
+    def accept(self, visitor):
+        return visitor.visit_member_fn(self)
 
 
 class StmtNode(Node):
@@ -194,6 +213,21 @@ class WhileNode(StmtNode):
 
     def accept(self, visitor):
         return visitor.visit_while(self)
+
+
+class PrintNode(StmtNode):
+    def __init__(self, line, col, value):
+        super().__init__(line, col)
+        self.value = value
+
+    def label(self):
+        return "Print"
+
+    def children(self):
+        return [self.value]
+
+    def accept(self, visitor):
+        return visitor.visit_print(self)
 
 
 class ExitNode(Node):
@@ -302,6 +336,44 @@ class CallNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_call(self)
+
+
+class MemberCallNode(ExprNode):
+    def __init__(self, line, col, obj, name_tok, args):
+        super().__init__(line, col)
+        self.obj = obj
+        self.name_tok = name_tok
+        self.name = name_tok.text
+        self.args = args
+
+    def label(self):
+        return f"MemberCall {self.name}"
+
+    def children(self):
+        return [self.obj] + self.args
+
+    def accept(self, visitor):
+        return visitor.visit_member_call(self)
+
+
+class ReadNode(ExprNode):
+    def label(self):
+        return "Read"
+
+    def accept(self, visitor):
+        return visitor.visit_read(self)
+
+
+class StringNode(ExprNode):
+    def __init__(self, line, col, value):
+        super().__init__(line, col)
+        self.value = value
+
+    def label(self):
+        return f'String "{self.value}"'
+
+    def accept(self, visitor):
+        return visitor.visit_string(self)
 
 
 class InitNode(ExprNode):
@@ -426,6 +498,17 @@ class Parser:
         if tok.kind == "not":
             self.eat()
             return NotNode(tok.line, tok.col, self.parse_factor())
+        if tok.kind == "kw_read":
+            self.eat()
+            self.expect("lparen", "'(' after 'read'")
+            if (arg := self.peek()) is not None and arg.kind != "rparen":
+                raise CompileError(arg.line, arg.col, "'read' takes no arguments")
+            self.expect("rparen", "')' after 'read('")
+            return ReadNode(tok.line, tok.col)
+        if tok.kind == "kw_print":
+            raise CompileError(tok.line, tok.col, "'print' has no value")
+        if tok.kind == "string":
+            raise CompileError(tok.line, tok.col, "a string literal can only be printed")
         raise self.error("expected a constant or a variable")
 
     def parse_term(self):
@@ -550,7 +633,7 @@ class Parser:
         self.next_line()
         self.eat()
         self.end_line()
-        return StructNode(name.line, name.col, name.text, fields)
+        return StructNode(name.line, name.col, name.text, fields, [])
 
     def parse_fn(self):
         self.next_line()
@@ -596,6 +679,22 @@ class Parser:
         self.end_line()
         return WhileNode(tok.line, tok.col, cond, self.parse_block("while"))
 
+    def parse_print(self):
+        tok = self.eat()
+        self.expect("lparen", "'(' after 'print'")
+        arg = self.peek()
+        if arg is not None and arg.kind == "rparen":
+            raise CompileError(arg.line, arg.col, "'print' takes one argument, got none")
+        if arg is not None and arg.kind == "string":
+            self.eat()
+            value = StringNode(arg.line, arg.col, arg.text[1:-1])
+        else:
+            value = self.parse_expr()
+        if (extra := self.peek()) is not None and extra.kind == "comma":
+            raise CompileError(extra.line, extra.col, "'print' takes one argument")
+        self.expect("rparen", "')' after the argument of 'print'")
+        return PrintNode(tok.line, tok.col, value)
+
     def parse_exit(self):
         tok = self.eat()
         return ExitNode(tok.line, tok.col, self.parse_factor())
@@ -615,6 +714,8 @@ class Parser:
             return self.parse_if()
         if tok.kind == "kw_while":
             return self.parse_while()
+        if tok.kind == "kw_print":
+            return self.parse_print()
         if tok.kind == "kw_else":
             raise CompileError(tok.line, tok.col, "'else' without an 'if'")
         if tok.kind in ("kw_struct", "kw_fn") and self.in_fn:
@@ -777,6 +878,9 @@ class SemanticChecker:
         node.body.exit.accept(self)
         self.current_fn, self.scopes = None, [{}]
 
+    def visit_member_fn(self, node):
+        raise NotImplementedError
+
     def visit_decl(self, node):
         if node.name in self.scopes[-1]:
             raise CompileError(
@@ -827,6 +931,9 @@ class SemanticChecker:
     def visit_while(self, node):
         self.check_condition(node, "while")
         node.body.accept(self)
+
+    def visit_print(self, node):
+        node.value.accept(self)
 
     def visit_block(self, node):
         self.scopes.append({})
@@ -894,6 +1001,17 @@ class SemanticChecker:
         node.type = node.fn.result_type
         return node.type
 
+    def visit_member_call(self, node):
+        raise NotImplementedError
+
+    def visit_read(self, node):
+        node.type = "i32"
+        return node.type
+
+    def visit_string(self, node):
+        node.type = "string"
+        return node.type
+
     def visit_const(self, node):
         if node.value > I64_MAX:
             raise CompileError(node.line, node.col, f"constant {node.value} does not fit in i64")
@@ -907,15 +1025,22 @@ class SemanticChecker:
 
 class CodeGen:
     def __init__(self):
-        self.module = ir.Module(name="practice6")
+        self.module = ir.Module(name="practice7")
         self.module.triple = llvm.get_default_triple()
         self.printf = ir.Function(
             self.module,
             ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True),
             name="printf",
         )
+        self.scanf = ir.Function(
+            self.module,
+            ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True),
+            name="scanf",
+        )
         self.structs = {}
+        self.layouts = {}
         self.functions = {}
+        self.texts = {}
 
     def enter_function(self, function):
         self.function = function
@@ -933,6 +1058,9 @@ class CodeGen:
         if not indices:
             return slot
         return self.builder.gep(slot, [ir.Constant(I32, i) for i in [0] + indices], inbounds=True)
+
+    def place(self, decl, indices):
+        raise NotImplementedError
 
     def coerce(self, value, have, want):
         if have == "i32" and want == "i64":
@@ -959,8 +1087,36 @@ class CodeGen:
         )
         self.builder.call(self.printf, [fmt])
 
+    def cstring(self, text):
+        data = text.encode("utf-8", "surrogateescape") + b"\0"
+        name = self.texts.setdefault(data, f"str_{len(self.texts)}")
+        return self.global_string(name, data)
+
+    def call_printf(self, fmt, *args):
+        self.builder.call(self.printf, [self.cstring(fmt), *args])
+
+    def printable(self, value, type_name):
+        if type_name == "bool":
+            return self.builder.select(value, self.cstring("true"), self.cstring("false"))
+        return value
+
+    def print_struct(self, ptr, type_name):
+        self.call_printf(f"{type_name}{{")
+        for field in self.layouts[type_name].fields:
+            sep = ", " if field.index else ""
+            ptr_field = self.field_ptr(ptr, [field.index])
+            if field.type_name in self.layouts:
+                self.call_printf(f"{sep}{field.name}: ")
+                self.print_struct(ptr_field, field.type_name)
+            else:
+                value = self.builder.load(ptr_field)
+                fmt = f"{sep}{field.name}: {PRINT_FORMATS[field.type_name]}"
+                self.call_printf(fmt, self.printable(value, field.type_name))
+        self.call_printf("}")
+
     def visit_program(self, node):
         for struct in node.structs:
+            self.layouts[struct.name] = struct
             self.structs[struct.name] = self.module.context.get_identified_type(struct.name)
             self.structs[struct.name].set_body(*[self.ir_type(f.type_name) for f in struct.fields])
         for fn in node.functions:
@@ -984,6 +1140,9 @@ class CodeGen:
             self.slots[param] = self.alloca_entry(arg.type, param.name)
             self.builder.store(arg, self.slots[param])
         node.body.accept(self)
+
+    def visit_member_fn(self, node):
+        raise NotImplementedError
 
     def visit_decl(self, node):
         slot = self.alloca_entry(self.ir_type(node.type_name), node.name)
@@ -1032,6 +1191,16 @@ class CodeGen:
         self.branch_unless_terminated(cond_bb)
         self.builder.position_at_end(end_bb)
 
+    def visit_print(self, node):
+        value, type_name = node.value.accept(self), node.value.type
+        if type_name in self.layouts:
+            slot = self.alloca_entry(self.structs[type_name], "printed")
+            self.builder.store(value, slot)
+            self.print_struct(slot, type_name)
+            self.call_printf("\n")
+        else:
+            self.call_printf(f"{PRINT_FORMATS[type_name]}\n", self.printable(value, type_name))
+
     def visit_block(self, node):
         for statement in node.statements:
             statement.accept(self)
@@ -1076,6 +1245,17 @@ class CodeGen:
             for arg, param in zip(node.args, node.fn.params)
         ]
         return self.builder.call(self.functions[node.fn], args)
+
+    def visit_member_call(self, node):
+        raise NotImplementedError
+
+    def visit_read(self, node):
+        slot = self.alloca_entry(I32, "input")
+        self.builder.call(self.scanf, [self.global_string("fmt_read", FORMAT_READ), slot])
+        return self.builder.load(slot)
+
+    def visit_string(self, node):
+        return self.cstring(node.value)
 
     def visit_init(self, node):
         value = ir.Constant(self.ir_type(node.type), ir.Undefined)
