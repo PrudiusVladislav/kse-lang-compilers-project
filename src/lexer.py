@@ -1,4 +1,6 @@
-START, IDENT, NUMBER, PAIR, BANG, ARROW = "START", "IDENT", "NUMBER", "PAIR", "BANG", "ARROW"
+START, IDENT, NUMBER, PAIR, BANG, ARROW, STRING = (
+    "START", "IDENT", "NUMBER", "PAIR", "BANG", "ARROW", "STRING"
+)
 
 KEYWORDS = {
     "i32": "kw_i32",
@@ -13,6 +15,8 @@ KEYWORDS = {
     "false": "kw_false",
     "struct": "kw_struct",
     "fn": "kw_fn",
+    "read": "kw_read",
+    "print": "kw_print",
 }
 CATEGORIES = {
     "kw_i32": ("keyword", "typename"),
@@ -25,10 +29,13 @@ CATEGORIES = {
     "kw_while": ("keyword", "statement"),
     "kw_struct": ("keyword", "statement"),
     "kw_fn": ("keyword", "statement"),
+    "kw_print": ("keyword", "statement"),
+    "kw_read": ("keyword", "builtin"),
     "kw_true": ("constant", "boolean"),
     "kw_false": ("constant", "boolean"),
     "ident": ("identifier", None),
     "number": ("constant", "numeric"),
+    "string": ("constant", "string"),
     "lbrace": ("block", "start"),
     "rbrace": ("block", "end"),
     "assign": ("operator", "assignment"),
@@ -120,6 +127,8 @@ def lex(data):
                 state, start_col = BANG, col
             elif b == ord("-"):
                 state, start_col = ARROW, col
+            elif b == ord('"'):
+                state, start, start_col = STRING, i, col
             elif b in SINGLES:
                 tokens.append(Token(SINGLES[b], chr(b), line, col))
             else:
@@ -161,6 +170,14 @@ def lex(data):
                 tokens.append(Token("minus", "-", line, start_col))
                 state = START
                 continue
+
+        elif state == STRING:
+            if b is None or b == 10:
+                raise CompileError(line, start_col, "string literal is not closed on its line")
+            if b == ord('"'):
+                text = data[start : i + 1].decode("utf-8", "surrogateescape")
+                tokens.append(Token("string", text, line, start_col))
+                state = START
 
         elif state == PAIR:
             kind, text, message = pair

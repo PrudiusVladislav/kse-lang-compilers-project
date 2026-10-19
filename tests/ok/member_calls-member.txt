@@ -1,0 +1,30 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+    fn d2 := () -> i32
+    {
+        i32 r{x * x + y * y}
+        exit r
+    }
+    fn twice := () -> i32
+    {
+        i32 r{d2() + d2()}
+        exit r
+    }
+    fn step := () -> i32
+    {
+        x := x + 1
+        exit x
+    }
+    fn hop := () -> i32
+    {
+        i32 t{step()}
+        i32 r{step() + t}
+        exit r
+    }
+}
+Point mut p{3, 4}
+print(p.twice())
+print(p.hop())
+exit p.x

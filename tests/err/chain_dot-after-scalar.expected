@@ -1,0 +1,1 @@
+compilation error: line 17:12: '.' after a call that returns i32
