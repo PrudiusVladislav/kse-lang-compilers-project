@@ -110,19 +110,29 @@ string     ::= '"' { any byte except '"' and newline } '"'
 (* chain is ident, field, call and member_call in one rule, because the parser
    cannot tell them apart before it reaches the end: after each name comes
    '.', and the chain goes on, '(', and that name was a function, or anything
-   else, and the chain is over. A bare ident is a variable, ident args a
-   function call, and a name with args after a '.' a member function called on
-   everything to its left. The chain may go on after args: that is the extra
-   task, a field or a member function of a call's result. Whether that result
-   is a struct is the semantic pass's question, as is p.d2() on a type name.
+   else, and the chain is over. A bare ident is a variable (Var), ident with
+   names after it a field chain (FieldAccess), ident args a function call
+   (Call), and a name with args after a '.' a member function called on
+   everything to its left (MemberCall). The chain may go on after args: that
+   is the extra task. A member function of a call's result is one more
+   MemberCall; fields of a call's result are a ResultField, a node of their
+   own, since there is no variable for the chain to start from. Whether that
+   result is a struct is the semantic pass's question, and it reports the
+   answer at the '.' after the ')'. So is p.d2() on a type name.
 
-   assign keeps its old rule, ident { "." ident }, so a call can never stand
-   left of ':=': p.moved(1).x := 5 parses as far as the '(' and fails there.
+   A valid assign is still ident { "." ident } ":=" expr, but the parser
+   reads the whole chain first, so it can tell what stands left of ':='. A
+   chain with args in it is rejected at the start of the line: "cannot assign
+   to the result of a call" when ':=' follows, "a call cannot be a statement"
+   when it does not. That is p.moved(1).x := 5 and p.shift(1) on a line alone.
 
    A struct ends with its member functions, and fn is reused for them as it
    is: the loop over field_decl stops at "fn" or "}", and from then on only
-   fn can follow. A field after a member function is a field_decl where the
-   grammar wants fn or "}", so the parser rejects it at that field.
+   fn can follow. Both ways to break the order get a message of their own
+   rather than a generic "expected": an fn where the first field_decl should
+   be is reported at that fn, and any line after a member function that is
+   neither fn nor "}" is reported at its first token, as a field after a
+   member function.
 
    read and print are keywords, not functions, so neither can be declared,
    assigned or called through a '.': every rule that wants an ident refuses
