@@ -1,0 +1,12 @@
+struct Point
+{
+    i32 mut x
+    i32 y
+    fn bump := () -> i32
+    {
+        x := x + 1
+        y := y + 1
+        exit x
+    }
+}
+exit 0

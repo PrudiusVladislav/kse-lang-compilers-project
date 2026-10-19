@@ -1,0 +1,50 @@
+struct Point
+{
+    i32 x
+    i32 y
+    fn show := () -> i32
+    {
+        print(x)
+        exit y
+    }
+}
+struct Circle
+{
+    Point center
+    i64 radius
+}
+fn make := (i32 k) -> Point
+{
+    Point q{k, k + 1}
+    exit q
+}
+Point p{3, 4}
+Circle c{p, 6000000000}
+i32 neg{0 - 9}
+i64 big{3000000000}
+bool yes{p.x == 3}
+print(neg)
+print(big * 2)
+print(yes)
+print(p.y == 3)
+print("100% \n raw")
+print("")
+print(p)
+print(c)
+print(c.center)
+print(make(7))
+print(p.show())
+i32 mut i{0}
+while i != 2
+{
+    if i == 0
+    {
+        print("if")
+    }
+    else
+    {
+        print("else")
+    }
+    i := i + 1
+}
+exit 0

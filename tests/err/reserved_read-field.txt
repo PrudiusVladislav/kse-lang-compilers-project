@@ -1,0 +1,6 @@
+struct Point
+{
+    i32 x
+    i32 read
+}
+exit 0
