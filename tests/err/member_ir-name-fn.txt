@@ -1,0 +1,13 @@
+struct fn_a
+{
+    i32 x
+    fn b := () -> i32
+    {
+        exit x
+    }
+}
+fn a_b := () -> i32
+{
+    exit 1
+}
+exit 1

@@ -1,0 +1,11 @@
+struct fmt
+{
+    i32 x
+    fn int := () -> i32
+    {
+        exit x
+    }
+}
+fmt f{7}
+print("hi")
+exit f.int()

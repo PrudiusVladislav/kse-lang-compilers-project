@@ -1,0 +1,30 @@
+struct Counter
+{
+    i32 mut n
+    fn a := (i32 k) -> i32
+    {
+        i32 r{b(k)}
+        exit r
+    }
+    fn b := (i32 k) -> i32
+    {
+        i32 mut r{k}
+        if k == 0
+        {
+            r := c()
+        }
+        else
+        {
+            r := a(k - 1)
+        }
+        exit r
+    }
+    fn c := () -> i32
+    {
+        n := n + 1
+        exit n
+    }
+}
+Counter q{0}
+i32 x{q.a(2)}
+exit x
