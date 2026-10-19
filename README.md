@@ -244,10 +244,25 @@ i32 nx{p.shift(2)}
 exit p.x
 ```
 
+The first line of the struct body has to be a field: an `fn` there is an error
+at that `fn`. Once the first member function is read, only `fn` or `}` may
+follow, and any other line is rejected at its first token as a field after a
+member function. A member function cannot share its name with a field or with
+another member function of the same struct; the error is at the function's name.
+
+A member call is a factor, like any call, and never a statement on its own:
+`p.shift(1)` alone on a line is `a call cannot be a statement`, and a chain with
+a call in it on the left of `:=` is `cannot assign to the result of a call`, both
+at the first token of the line. `Point.d2()` is a call on a type, an error at
+`Point`. A call on a value that is not a struct is an error at the function's
+name, or, when the value is a call's result, at the `.` after its `)`: `p.d2().x`
+and `p.d2().shift(1)` both point at that `.`.
+
 Inside the body a name is a parameter or a local first, then a field of the
-object; a call `f(…)` is a member function of the same struct first, then a
-global one. Like any function, the body sees no top-level variable. A field
-without `mut` cannot be assigned, inside a member function too.
+object, so a parameter or a local named like a field hides it. A call `f(…)` is
+a member function of the same struct first, then a global one. Like any
+function, the body sees no top-level variable. A field without `mut` cannot be
+assigned, inside a member function too.
 
 A member function is *mutating* if it assigns a field of its object, or calls a
 mutating member function on its object or on one of its fields. A mutating call
@@ -255,8 +270,9 @@ needs `mut` on every link — the object and each field on the way — exactly l
 a write through the same chain; a non-mutating one may be called on anything.
 Since member functions may call each other in a cycle, this is decided after
 every body is checked: mark the ones that assign a field, then repeat until no
-new one gets marked. A call's result is a temporary copy: any member function may
-be called on it, mutating or not, but it can never be assigned.
+new one gets marked. Assigning a local that hides a field does not count. A
+call's result is a temporary copy: its fields can be read and any member
+function may be called on it, mutating or not, but it can never be assigned.
 
 ### read and print
 
@@ -436,12 +452,21 @@ function, `Point_shift`. Its first parameter is a pointer to the object, `this`;
 the language has no name for it. A field in the body is a `gep` on `this`, so
 `x := x + dx` is a `gep`, a `load`, an `add` and a `store`, and the change lands
 in the caller's object. A call passes the object's address — its `alloca`, or a
-`gep` into it for `c.center.d2()` — and never loads it. A call's result is first
-stored into a temporary `alloca`, and that address is `this` for whatever is
-called on it next.
+`gep` into it for `c.center.d2()` — and never loads it. A call inside a member
+function that resolves to a member function of the same struct passes `this`
+on. A call's result is stored into a temporary `alloca` when a member function
+is called on it, and that address is `this`; a field of a result is read
+straight from the value with `extractvalue`, with no `alloca` at all.
 
-Global functions keep their `fn_` prefix, so `Point_shift` can never collide with
-a function the program declares, even one called `Point_shift`.
+Global functions keep their `fn_` prefix, so a function the program calls
+`Point_shift` is `fn_Point_shift`. Names may contain `_`, though, so two
+declarations can still map to one IR name: `b` in `struct fn_a` and a global
+`a_b` are both `fn_a_b`, and `c` in `struct a_b` and `b_c` in `struct a` are
+both `a_b_c`. That is a compilation error at the second declaration
+(`tests/err/member_ir-name-fn.txt`, `tests/err/member_ir-name-method.txt`). The
+compiler's own globals have a `.` in their names — `fmt.int`, `str.0` — which no
+identifier can contain, so `struct fmt` with a member `int` compiles
+(`tests/ok/member_ir-name-internal.txt`).
 
 ## read and print in the IR
 
@@ -462,7 +487,11 @@ level down, so a new struct prints with no new code in the compiler.
 **Where a write through a chain fails.** At the first link that is not `mut`:
 `p.x := 15` with a const `p` points at `p`, `c.center.x := 25` with a const
 `center` points at `center`. Replacing a whole object points at the object and
-names the const field, at any depth: `its field 'center.y' is not mut`.
+names the const field, at any depth: `its field 'center.y' is not mut`. A
+mutating call fails the same way, at the first link that is not `mut`:
+`q.shift(1)` at `q`, `c.center.shift(1)` at `center`. Since that check waits for
+the mutating set to settle, it runs after every body is checked, so it is
+reported after any other error in the program.
 
 **A struct that uses itself or a struct below it.** Neither has a check of its
 own. A struct's name is registered only after its fields are checked, so
@@ -537,8 +566,8 @@ files.
 src/lexer.py    byte-by-byte state machine: START, IDENT, NUMBER, PAIR, BANG, ARROW, STRING
 grammar.ebnf    the grammar, one rule per parse method
 src/compiler.py the AST classes, the parser, the semantic pass, the codegen walk
-tests/ok/       42 programs that run, 12 of them with expected trees
-tests/err/      104 programs that must fail
+tests/ok/       44 programs that run, 12 of them with expected trees
+tests/err/      107 programs that must fail
 run_tests.sh    compiles and runs each test, compares against .expected
 check.py        the same tests as a pass/fail table
 Dockerfile      ubuntu:24.04 with llvm, clang and llvmlite
