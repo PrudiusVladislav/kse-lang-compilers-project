@@ -1,10 +1,10 @@
 Program
   Struct Point
-    Field x i32 mut
-    Field y i32 mut
+    Member x i32 mut
+    Member y i32 mut
   Struct Circle
-    Field center Point const
-    Field radius i32 mut
+    Member center Point const
+    Member radius i32 mut
   Fn add -> i32
     Param a i32
     Param b i32
@@ -20,7 +20,7 @@ Program
     Block
       Decl zero bool const
         BinOp ==
-          FieldAccess p.x
+          Field p.x
           Const 0
       Exit
         Var zero
@@ -30,9 +30,9 @@ Program
     Block
       Decl q Point const
         BinOp +
-          FieldAccess p.x
+          Field p.x
           Var dx
-        FieldAccess p.y
+        Field p.y
       Exit
         Var q
   Decl p Point const
@@ -42,7 +42,7 @@ Program
     Var p
     Const 5
   Decl xCoord i32 const
-    FieldAccess c.center.x
+    Field c.center.x
   Decl z bool const
     Call isXZero
       Var p
@@ -58,7 +58,7 @@ Program
     Call add
       Var xCoord
       Call add
-        FieldAccess r.x
-        FieldAccess c.radius
+        Field r.x
+        Field c.radius
   Exit
     Var result

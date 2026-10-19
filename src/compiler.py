@@ -68,7 +68,7 @@ class FieldNode(Node):
         self.mutable = mutable
 
     def label(self):
-        return f"Field {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
+        return f"Member {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
 
     def accept(self, visitor):
         return visitor.visit_field(self)
@@ -316,7 +316,7 @@ class FieldAccessNode(ExprNode):
         self.path = path
 
     def label(self):
-        return f"FieldAccess {'.'.join([self.name] + [f.text for f in self.path])}"
+        return f"Field {'.'.join([self.name] + [f.text for f in self.path])}"
 
     def accept(self, visitor):
         return visitor.visit_field_access(self)
