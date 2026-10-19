@@ -900,10 +900,11 @@ class SemanticChecker:
             seen.add(param.name)
 
     def check_args(self, node):
-        if len(node.args) != len(node.fn.params):
+        count = len(node.fn.params)
+        if len(node.args) != count:
             raise CompileError(
                 node.line, node.col,
-                f"'{node.name}' takes {len(node.fn.params)} arguments, got {len(node.args)}",
+                f"'{node.name}' takes {count} argument{'' if count == 1 else 's'}, got {len(node.args)}",
             )
         for arg, param in zip(node.args, node.fn.params):
             arg.accept(self)
